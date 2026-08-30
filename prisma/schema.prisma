@@ -1,0 +1,609 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum AgentStatus {
+  PENDING
+  ONLINE
+  OFFLINE
+  REVOKED
+}
+
+enum AccountEnvironment {
+  DEMO
+  REAL
+  CONTEST
+}
+
+enum MarginMode {
+  NETTING
+  HEDGING
+  EXCHANGE
+  UNKNOWN
+}
+
+enum EventImportance {
+  LOW
+  MODERATE
+  HIGH
+  UNKNOWN
+}
+
+enum TradeDirection {
+  BUY
+  SELL
+}
+
+enum ExecutionMode {
+  MARKET
+  STRADDLE
+  MULTI
+  NEWS_REVERSAL
+}
+
+enum VolumeAllocationMode {
+  SPLIT_TOTAL
+  FULL_EACH
+}
+
+enum NewsReversalState {
+  WAITING_INITIAL_FILL
+  INITIAL_BUY_ACTIVE
+  INITIAL_SELL_ACTIVE
+  TP1_PROTECTED
+  TP2_PROTECTED
+  REVERSAL_ACTIVE
+  COMPLETED
+}
+
+enum TradeJobLegPurpose {
+  INITIAL
+  REVERSAL
+}
+
+enum TradeJobLegStatus {
+  PLANNED
+  SUBMITTED
+  FILLED
+  CANCELLED
+  CLOSED_TP
+  CLOSED_SL
+  CLOSED_MANUAL
+  REJECTED
+}
+
+enum RiskMode {
+  FIXED_LOT
+  RISK_PERCENT
+}
+
+enum ExecutionVenue {
+  MT5
+  CTRADER
+}
+
+enum MockExecutionOutcome {
+  BUY_FILL
+  SELL_FILL
+  TIMEOUT
+  REJECT
+}
+
+enum StrategyTimeframe {
+  M15
+  H1
+}
+
+enum StrategyPositionState {
+  PROBE_OPEN
+  MAIN_ADDED
+  CLOSED_TP
+  CLOSED_SL
+  CLOSED_TIMEOUT
+}
+
+enum TradeJobStatus {
+  DRAFT
+  SCHEDULED
+  SYNCED
+  ARMED
+  SUBMITTED
+  FILLED
+  PARTIALLY_FILLED
+  REJECTED
+  MANAGED
+  CLOSED
+  CANCELLED
+  EXPIRED
+  MISSED
+}
+
+enum ExecutionPhase {
+  SYNCED
+  ARMED
+  PREFLIGHT_REJECTED
+  SUBMITTED
+  ACCEPTED
+  PARTIALLY_FILLED
+  FILLED
+  REJECTED
+  CANCELLED
+  CLOSED
+  MISSED
+  ERROR
+}
+
+enum CTraderConnectionStatus {
+  PENDING
+  ACTIVE
+  TOKEN_EXPIRED
+  REVOKED
+  ERROR
+}
+
+enum CTraderAccountEnvironment {
+  DEMO
+  LIVE
+}
+
+model User {
+  id                 String              @id @default(uuid()) @db.Uuid
+  telegramId         BigInt              @unique
+  telegramUsername   String?
+  firstName          String?
+  languageCode       String              @default("ru")
+  timezone           String              @default("UTC")
+  status             UserStatus          @default(ACTIVE)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  settings           UserSettings?
+  agents             Agent[]
+  accounts           TradingAccount[]
+  pairingCodes       PairingCode[]
+  tradeJobs          TradeJob[]
+  strategyConfigs    StrategyConfig[]
+  strategyPositions  StrategyPosition[]
+  auditLogs          AuditLog[]
+  telegramSession    TelegramSession?
+  cTraderConnections CTraderConnection[]
+  cTraderAccounts    CTraderAccount[]
+  cTraderOAuthStates CTraderOAuthState[]
+}
+
+model CTraderOAuthState {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  stateHash String    @unique
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model CTraderConnection {
+  id                    String                    @id @default(uuid()) @db.Uuid
+  userId                String                    @db.Uuid
+  accessTokenCiphertext String                    @db.Text
+  refreshTokenCiphertext String                   @db.Text
+  accessTokenExpiresAt  DateTime
+  status                CTraderConnectionStatus   @default(PENDING)
+  lastError             String?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  user                  User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts              CTraderAccount[]
+
+  @@index([userId, status])
+}
+
+model CTraderAccount {
+  id                    String                    @id @default(uuid()) @db.Uuid
+  userId                String                    @db.Uuid
+  connectionId          String                    @db.Uuid
+  ctidTraderAccountId   BigInt
+  traderLogin           BigInt?
+  brokerTitle           String?
+  environment           CTraderAccountEnvironment
+  enabled               Boolean                   @default(true)
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  user                  User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection            CTraderConnection         @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  tradeJobs             TradeJob[]
+  strategyConfigs       StrategyConfig[]
+  strategyPositions     StrategyPosition[]
+
+  @@unique([userId, ctidTraderAccountId, environment])
+  @@index([userId, enabled])
+  @@index([connectionId])
+}
+
+model StrategyConfig {
+  id                    String          @id @default(uuid()) @db.Uuid
+  userId                String          @db.Uuid
+  cTraderAccountId      String?         @db.Uuid
+  accountId             String?         @db.Uuid
+  executionVenue        ExecutionVenue  @default(CTRADER)
+  symbol                String          @default("XAUUSD")
+  enabled               Boolean         @default(false)
+  probeRiskPercent      Decimal         @default(0.10) @db.Decimal(5, 2)
+  mainRiskPercent       Decimal         @default(0.30) @db.Decimal(5, 2)
+  emaFastPeriod         Int             @default(50)
+  emaSlowPeriod         Int             @default(200)
+  breakoutPeriod        Int             @default(20)
+  atrPeriod             Int             @default(14)
+  stopAtrMultiplier     Decimal         @default(1.20) @db.Decimal(5, 2)
+  takeProfitR           Decimal         @default(3.00) @db.Decimal(5, 2)
+  maxSpreadPoints       Int             @default(50)
+  confirmationBars      Int             @default(3)
+  cooldownBars          Int             @default(4)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cTraderAccount        CTraderAccount? @relation(fields: [cTraderAccountId], references: [id], onDelete: Cascade)
+  account               TradingAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  positions             StrategyPosition[]
+
+  @@unique([userId, cTraderAccountId, symbol])
+  @@unique([userId, accountId, symbol])
+  @@index([enabled, symbol])
+}
+
+model StrategyPosition {
+  id                    String                @id @default(uuid()) @db.Uuid
+  userId                String                @db.Uuid
+  cTraderAccountId      String?               @db.Uuid
+  accountId             String?               @db.Uuid
+  executionVenue        ExecutionVenue        @default(CTRADER)
+  strategyConfigId      String                @db.Uuid
+  symbol                String
+  direction             TradeDirection
+  state                 StrategyPositionState
+  breakoutLevel         Decimal               @db.Decimal(30, 10)
+  atrAtEntry             Decimal               @db.Decimal(30, 10)
+  probeEntryPrice        Decimal               @db.Decimal(30, 10)
+  mainEntryPrice         Decimal?              @db.Decimal(30, 10)
+  stopLossPrice         Decimal                @db.Decimal(30, 10)
+  takeProfitPrice       Decimal                @db.Decimal(30, 10)
+  probeRiskPercent      Decimal               @db.Decimal(5, 2)
+  mainRiskPercent       Decimal               @db.Decimal(5, 2)
+  confirmationDeadline DateTime
+  openedAt              DateTime
+  mainAddedAt           DateTime?
+  closedAt              DateTime?
+  closePrice            Decimal?              @db.Decimal(30, 10)
+  closeReason           String?
+  realizedR             Decimal?              @db.Decimal(10, 4)
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cTraderAccount        CTraderAccount?       @relation(fields: [cTraderAccountId], references: [id], onDelete: Restrict)
+  account               TradingAccount?       @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  strategyConfig        StrategyConfig        @relation(fields: [strategyConfigId], references: [id], onDelete: Restrict)
+  events                StrategyEvent[]
+
+  @@index([strategyConfigId, state])
+  @@index([userId, createdAt])
+}
+
+model StrategyEvent {
+  id                    String           @id @default(uuid()) @db.Uuid
+  strategyPositionId    String           @db.Uuid
+  type                  String
+  occurredAt            DateTime
+  price                 Decimal?         @db.Decimal(30, 10)
+  message               String
+  metadata              Json?
+  createdAt             DateTime         @default(now())
+  strategyPosition      StrategyPosition @relation(fields: [strategyPositionId], references: [id], onDelete: Cascade)
+
+  @@index([strategyPositionId, occurredAt])
+}
+
+model MarketCandle {
+  id                    String            @id @default(uuid()) @db.Uuid
+  symbol                String
+  timeframe             StrategyTimeframe
+  openTime              DateTime
+  open                  Decimal           @db.Decimal(30, 10)
+  high                  Decimal           @db.Decimal(30, 10)
+  low                   Decimal           @db.Decimal(30, 10)
+  close                 Decimal           @db.Decimal(30, 10)
+  spreadPoints          Int               @default(0)
+  source                String            @default("MOCK")
+  createdAt             DateTime          @default(now())
+
+  @@unique([symbol, timeframe, openTime, source])
+  @@index([symbol, timeframe, openTime])
+}
+
+model TelegramSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @db.Uuid
+  state     String
+  data      Json
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserSettings {
+  id                    String   @id @default(uuid()) @db.Uuid
+  userId                String   @unique @db.Uuid
+  realTradingEnabled    Boolean  @default(false)
+  defaultRiskMode       RiskMode @default(FIXED_LOT)
+  defaultFixedLot       Decimal  @default(0.01) @db.Decimal(10, 4)
+  defaultRiskPercent    Decimal  @default(0.25) @db.Decimal(5, 2)
+  defaultArmSeconds     Int      @default(10)
+  defaultMaxLatenessMs  Int      @default(1000)
+  defaultDeviationPoints Int     @default(20)
+  defaultMaxSpreadPoints Int     @default(50)
+  maxDailyLossPercent   Decimal  @default(1.00) @db.Decimal(5, 2)
+  riskLimitEnabled      Boolean  @default(false)
+  maxConcurrentJobs     Int      @default(1)
+  cooldownSeconds       Int      @default(900)
+  notificationsEnabled Boolean  @default(true)
+  defaultSymbol         String   @default("XAUUSD")
+  multiTradesPerSide    Int      @default(3)
+  multiFirstEntryPips   Int      @default(50)
+  multiFirstSlPips      Int      @default(10)
+  multiFirstTpPips      Int      @default(200)
+  multiNextStepPips     Int      @default(10)
+  multiNextSlPips       Int      @default(10)
+  multiNextTpPips       Int      @default(200)
+  multiExpirySeconds    Int      @default(30)
+  reversalVolumeMode    VolumeAllocationMode @default(SPLIT_TOTAL)
+  reversalEntryPips     Int      @default(50)
+  reversalSlPips        Int      @default(10)
+  reversalTp1Pips       Int      @default(100)
+  reversalTp2Pips       Int      @default(200)
+  reversalTp3Pips       Int      @default(300)
+  reversalTp1BufferPips Int      @default(20)
+  reversalTp2BufferPips Int      @default(20)
+  reversalPendingExpirySeconds Int @default(30)
+  reversalManagementSeconds Int @default(300)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PairingCode {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  codeHash   String    @unique
+  expiresAt  DateTime
+  claimedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Agent {
+  id              String            @id @default(uuid()) @db.Uuid
+  userId          String            @db.Uuid
+  deviceId        String            @unique
+  name            String
+  tokenHash       String            @unique
+  status          AgentStatus       @default(PENDING)
+  version         String?
+  terminalBuild   Int?
+  serverUtcOffsetSeconds Int            @default(0)
+  lastIp          String?
+  lastSeenAt      DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts        TradingAccount[]
+  executionReports ExecutionReport[]
+
+  @@index([userId, status])
+}
+
+model TradingAccount {
+  id                 String             @id @default(uuid()) @db.Uuid
+  userId             String             @db.Uuid
+  agentId            String             @db.Uuid
+  login              BigInt
+  broker             String
+  server             String
+  currency           String
+  environment        AccountEnvironment
+  marginMode         MarginMode         @default(UNKNOWN)
+  leverage           Int?
+  balance            Decimal?           @db.Decimal(20, 2)
+  equity             Decimal?           @db.Decimal(20, 2)
+  tradeAllowed       Boolean            @default(false)
+  expertTradeAllowed Boolean            @default(false)
+  lastSeenAt         DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent              Agent              @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tradeJobs          TradeJob[]
+  strategyConfigs    StrategyConfig[]
+  strategyPositions  StrategyPosition[]
+
+  @@unique([login, server])
+  @@index([userId])
+  @@index([agentId])
+}
+
+model EconomicEvent {
+  id           String          @id @default(uuid()) @db.Uuid
+  externalId   String
+  source       String          @default("MT5")
+  title        String
+  currency     String
+  countryCode  String?
+  importance   EventImportance @default(UNKNOWN)
+  scheduledAt  DateTime
+  forecast     Decimal?        @db.Decimal(30, 10)
+  previous     Decimal?        @db.Decimal(30, 10)
+  actual       Decimal?        @db.Decimal(30, 10)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  tradeJobs    TradeJob[]
+
+  @@unique([source, externalId, scheduledAt])
+  @@index([currency, importance, scheduledAt])
+}
+
+model TradeJob {
+  id                 String          @id @default(uuid()) @db.Uuid
+  userId             String          @db.Uuid
+  accountId          String?         @db.Uuid
+  cTraderAccountId   String?         @db.Uuid
+  executionVenue     ExecutionVenue  @default(MT5)
+  economicEventId    String?         @db.Uuid
+  idempotencyKey     String          @unique
+  symbol             String
+  direction          TradeDirection
+  executionMode      ExecutionMode   @default(MARKET)
+  riskMode           RiskMode
+  fixedLot           Decimal?        @db.Decimal(10, 4)
+  riskPercent        Decimal?        @db.Decimal(5, 2)
+  stopLossPoints     Int
+  takeProfitPoints   Int
+  deviationPoints    Int             @default(20)
+  maxSpreadPoints    Int             @default(50)
+  armSeconds         Int             @default(10)
+  maxLatenessMs      Int             @default(1000)
+  entryDistancePoints Int            @default(100)
+  pendingExpirySeconds Int           @default(30)
+  multiTradesPerSide   Int?
+  multiNextStepPoints  Int?
+  multiNextSlPoints    Int?
+  multiNextTpPoints    Int?
+  volumeAllocationMode VolumeAllocationMode?
+  takeProfit2Points    Int?
+  takeProfit3Points    Int?
+  reversalTp1BufferPoints Int?
+  reversalTp2BufferPoints Int?
+  maxReversals         Int             @default(1)
+  reversalCount        Int             @default(0)
+  newsReversalState    NewsReversalState?
+  activeDirection      TradeDirection?
+  managementExpiresAt DateTime?
+  cancelRequestedAt  DateTime?
+  closeRequestedAt   DateTime?
+  mockOutcome        MockExecutionOutcome?
+  mockBid            Decimal?        @db.Decimal(30, 10)
+  mockAsk            Decimal?        @db.Decimal(30, 10)
+  mockSlippagePoints Int             @default(2)
+  executeAt          DateTime
+  expiresAt          DateTime
+  status             TradeJobStatus  @default(DRAFT)
+  settingsSnapshot   Json
+  version            Int             @default(1)
+  leaseOwner         String?
+  leaseExpiresAt     DateTime?
+  syncedAt           DateTime?
+  armedAt            DateTime?
+  submittedAt        DateTime?
+  filledAt           DateTime?
+  closedAt           DateTime?
+  cancelledAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account            TradingAccount? @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  cTraderAccount     CTraderAccount? @relation(fields: [cTraderAccountId], references: [id], onDelete: Restrict)
+  economicEvent      EconomicEvent?  @relation(fields: [economicEventId], references: [id], onDelete: SetNull)
+  executionReports   ExecutionReport[]
+  legs               TradeJobLeg[]
+
+  @@index([accountId, status, executeAt])
+  @@index([cTraderAccountId, status, executeAt])
+  @@index([userId, createdAt])
+  @@index([executionVenue, status, leaseExpiresAt])
+}
+
+model TradeJobLeg {
+  id               String            @id @default(uuid()) @db.Uuid
+  jobId            String            @db.Uuid
+  revision         Int               @default(0)
+  legNumber        Int
+  direction        TradeDirection
+  purpose          TradeJobLegPurpose
+  targetNumber     Int
+  plannedVolume    Decimal           @db.Decimal(10, 4)
+  filledVolume     Decimal?          @db.Decimal(10, 4)
+  entryPrice       Decimal?          @db.Decimal(30, 10)
+  stopLossPrice    Decimal?          @db.Decimal(30, 10)
+  takeProfitPrice  Decimal?          @db.Decimal(30, 10)
+  brokerOrderId    String?
+  brokerPositionId String?
+  status           TradeJobLegStatus @default(PLANNED)
+  closedAt         DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  job              TradeJob          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, purpose, direction, targetNumber, revision])
+  @@index([jobId, status])
+  @@index([brokerOrderId])
+  @@index([brokerPositionId])
+}
+
+model SystemControl {
+  id             String   @id
+  tradingHalted  Boolean  @default(false)
+  reason         String?
+  updatedAt      DateTime @updatedAt
+}
+
+model ExecutionReport {
+  id            String         @id @default(uuid()) @db.Uuid
+  jobId         String         @db.Uuid
+  agentId       String?        @db.Uuid
+  executionSource String       @default("MT5_AGENT")
+  reportKey     String         @unique
+  phase         ExecutionPhase
+  occurredAt    DateTime
+  orderTicket   String?
+  dealTicket    String?
+  retcode       Int?
+  message       String?
+  requestedPrice Decimal?      @db.Decimal(30, 10)
+  filledPrice   Decimal?       @db.Decimal(30, 10)
+  filledVolume  Decimal?       @db.Decimal(10, 4)
+  spreadPoints  Int?
+  latencyMs     Int?
+  raw           Json?
+  createdAt     DateTime       @default(now())
+  job           TradeJob       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  agent         Agent?         @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  @@index([jobId, occurredAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String?  @db.Uuid
+  actorType   String
+  actorId     String
+  action      String
+  entityType  String
+  entityId    String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([userId, createdAt])
+}
