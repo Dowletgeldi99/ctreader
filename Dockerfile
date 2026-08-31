@@ -22,7 +22,7 @@ COPY --from=build /app/prisma ./prisma
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/main.js"]
+CMD ["node", "dist/src/main.js"]
 
 FROM dependencies AS migrator
 WORKDIR /app
