@@ -5,7 +5,10 @@ RUN npm ci
 
 FROM dependencies AS build
 COPY . .
-RUN npm run prisma:generate && npm run build
+# Prisma loads prisma.config.ts during client generation and therefore requires
+# DATABASE_URL to be defined even though `generate` never connects to a database.
+# Runtime and migration containers receive the real URL from Docker Compose.
+RUN DATABASE_URL="postgresql://newsbot:build-only@127.0.0.1:5432/newsbot?schema=public" npm run prisma:generate && npm run build
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
