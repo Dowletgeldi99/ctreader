@@ -89,6 +89,7 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN in .env.production}
+      UI_DOMAIN: ${UI_DOMAIN:-tradetm.club}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.production}
     ports:
       - "80:80"
@@ -96,6 +97,7 @@ services:
       - "443:443/udp"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${UI_DIST_PATH:-/opt/ui/dist}:/srv/ui:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

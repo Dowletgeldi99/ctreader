@@ -2,6 +2,26 @@
 	email {$ACME_EMAIL}
 }
 
+{$UI_DOMAIN}, www.{$UI_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	root * /srv/ui
+	try_files {path} /index.html
+	file_server
+
+	log {
+		output stdout
+		format json
+	}
+}
+
 {$DOMAIN} {
 	encode zstd gzip
 
