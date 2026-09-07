@@ -58,6 +58,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly mode: "disabled" | "polling" | "webhook";
   private readonly publicBaseUrl?: string;
   private readonly webhookSecret?: string;
+  private readonly cbotInstallUrl?: string;
   private readonly adminTelegramIds: Set<string>;
 
   constructor(
@@ -78,6 +79,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.mode = config.getOrThrow("TELEGRAM_MODE");
     this.publicBaseUrl = config.get<string>("PUBLIC_BASE_URL");
     this.webhookSecret = config.get<string>("TELEGRAM_WEBHOOK_SECRET");
+    const configuredCbotUrl = config.get<string>("CBOT_INSTALL_URL");
+    this.cbotInstallUrl = configuredCbotUrl || (this.publicBaseUrl
+      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download`
+      : undefined);
     this.adminTelegramIds = new Set((config.get<string>("TELEGRAM_ADMIN_IDS") ?? "")
       .split(",").map((value) => value.trim()).filter(Boolean));
 
@@ -747,12 +752,18 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const user = await this.upsertContextUser(ctx.from);
       await this.subscriptions.ensureTrial(user.id);
       const result = await this.cbots.createPairingCode(user.id);
+      const keyboard = this.cbotInstallUrl
+        ? new InlineKeyboard().url("1. Установить TradeTm cBot", this.cbotInstallUrl)
+          .row().text("2. Проверить подключение", "status")
+        : undefined;
       await ctx.reply([
         `Код подключения cBot: ${result.code}`,
         `Действует до ${this.formatAshgabatTime(result.expiresAt)} по Ашхабаду.`,
         "",
-        "Введите код в параметре PairingCode приложения XAUUSD Trade Bot. Код одноразовый.",
-      ].join("\n"));
+        "Нажмите кнопку установки и откройте файл через cTrader Mobile.",
+        "Выберите свой счёт, XAUUSD, вставьте этот код в Pairing code и нажмите Start in Cloud.",
+        "Компьютер и VPS клиенту не нужны.",
+      ].join("\n"), keyboard ? { reply_markup: keyboard } : undefined);
     } catch (error) { await ctx.reply(this.errorMessage(error)); }
   }
 

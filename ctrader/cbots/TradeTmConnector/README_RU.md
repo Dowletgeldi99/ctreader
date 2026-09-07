@@ -4,20 +4,32 @@
 Один пользователь запускает один экземпляр cBot на своём счёте и управляет
 заданиями только через Telegram.
 
-## Установка
+## Установка клиентом только с телефона
 
 1. В Telegram отправьте `/connect_cbot`. Код действует 10 минут и используется один раз.
-2. Откройте cTrader Windows/Mac → **Algo** → **New cBot** и назовите его `TradeTmConnector`.
-3. Полностью замените созданный C# код содержимым `TradeTmConnector.cs` и нажмите **Build**.
-4. Добавьте instance cBot на график **XAUUSD** нужного счёта.
-5. Укажите параметры:
-   - `Backend URL`: `https://api.tradetm.club` (или фактический URL API);
-   - `Pairing code`: код из Telegram;
-   - `Expected account`: номер выбранного счёта;
-   - `Allow LIVE trading`: `No` для demo; для live включать только после полной demo-проверки;
-   - `Poll interval ms`: `500`.
-6. Нажмите **Start**. В логе должно появиться `cBot paired`.
-7. В Telegram проверьте `/status`, затем `/test` и выберите счёт с префиксом `cBot`.
+2. Нажмите Telegram-кнопку **Установить TradeTm cBot** и откройте `.algo` через cTrader Mobile.
+3. В cTrader нажмите **Start cBot**, выберите нужный счёт, `XAUUSD` и Cloud execution.
+4. Вставьте Telegram-код в `Pairing code`. Для demo оставьте `Allow LIVE trading = No`.
+5. Нажмите **Start**. Вернитесь в Telegram и нажмите **Проверить подключение**.
+6. Выполните `/test` и выберите счёт с префиксом `cBot`.
+
+Backend URL и безопасные defaults уже находятся внутри `.algo`. Компьютер,
+редактор кода, собственный VPS и ручной Build клиенту не нужны. Cloud instance
+работает независимо от телефона.
+
+## Автоматический выпуск для оператора
+
+Production Docker build компилирует `TradeTmConnector.csproj` официальным
+`cTrader.Automate` package, создаёт sealed `.algo` без исходного кода и кладёт
+его в runtime image. Файл доступен по стабильному адресу:
+
+```text
+https://api.tradetm.club/api/v1/cbot/download
+```
+
+Если `CBOT_INSTALL_URL` пуст, Telegram автоматически строит адрес как
+`PUBLIC_BASE_URL/api/v1/cbot/download`. Для Store/Invite в переменную можно
+позже поставить прямую ссылку cTrader — backend менять не потребуется.
 
 После первого pairing секретный token хранится в LocalStorage конкретного
 instance. Pairing code при следующих запусках не используется. Если instance

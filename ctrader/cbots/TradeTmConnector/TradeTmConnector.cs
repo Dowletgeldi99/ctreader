@@ -377,7 +377,7 @@ namespace cAlgo.Robots
                 return;
             }
             var offset = j.ReversalGapPoints * Symbol.TickSize;
-            var target = Symbol.NormalizePrice(opposite == TradeType.Sell ? triggerSl.Value - offset : triggerSl.Value + offset);
+            var target = Math.Round(opposite == TradeType.Sell ? triggerSl.Value - offset : triggerSl.Value + offset, Symbol.Digits);
             for (var i = 1; i <= 3; i++)
             {
                 var tp = i == 1 ? j.TakeProfitPoints : i == 2 ? j.TakeProfit2Points : j.TakeProfit3Points;

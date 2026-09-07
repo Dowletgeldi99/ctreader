@@ -10,3 +10,5 @@ src/generated/
 .DS_Store
 .idea/
 .vscode/
+**/bin/
+**/obj/

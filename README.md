@@ -115,10 +115,11 @@ backend remains centralized on Linux; only the small connector runs inside the
 user's cTrader account (including cTrader Cloud).
 
 1. Deploy the backend and apply Prisma migrations.
-2. Compile `ctrader/cbots/TradeTmConnector/TradeTmConnector.cs` in cTrader Algo.
-3. Get a one-time code with `/connect_cbot`.
-4. Start the cBot on the account's XAUUSD chart with the production backend URL,
-   code and expected account number.
+2. Production Docker automatically compiles a sealed `.algo` and serves it at
+   `/api/v1/cbot/download`.
+3. The user gets a one-time code and an install button with `/connect_cbot`.
+4. On cTrader Mobile the user selects the account, XAUUSD, enters the code and
+   starts the cBot in Cloud.
 5. Verify `/status`, then create `/test` and select the `cBot` account.
 
 See [the cBot setup guide](ctrader/cbots/TradeTmConnector/README_RU.md).

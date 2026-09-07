@@ -1,4 +1,7 @@
-import { Body, Controller, Get, Ip, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Ip, NotFoundException, Param, Post, Query, Req, Res, StreamableFile, UseGuards } from "@nestjs/common";
+import { createReadStream, existsSync } from "node:fs";
+import { join } from "node:path";
+import type { Response } from "express";
 import { CbotAuthGuard } from "./cbot-auth.guard";
 import type { CbotAuthenticatedRequest } from "./cbot-request";
 import { CbotService } from "./cbot.service";
@@ -12,6 +15,19 @@ export class CbotController {
 
   @Post("pairing/claim")
   claim(@Body() dto: ClaimCbotPairingDto, @Ip() ip: string) { return this.cbots.claim(dto, ip); }
+
+  @Get("download")
+  download(@Res({ passthrough: true }) response: Response) {
+    const file = join(process.cwd(), "artifacts", "TradeTmConnector.algo");
+    if (!existsSync(file)) throw new NotFoundException("cBot release artifact is not available in this development build");
+    response.set({
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": 'attachment; filename="TradeTmConnector.algo"',
+      "Cache-Control": "public, max-age=300, must-revalidate",
+      "X-Content-Type-Options": "nosniff",
+    });
+    return new StreamableFile(createReadStream(file));
+  }
 
   @Post("heartbeat")
   @UseGuards(CbotAuthGuard)
