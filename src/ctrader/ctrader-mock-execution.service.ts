@@ -178,7 +178,7 @@ export class CTraderMockExecutionService implements OnModuleInit, OnModuleDestro
             spreadPoints: 2,
             latencyMs: 25,
             message: job.executionMode === "NEWS_REVERSAL"
-              ? `${direction} three-target basket filled; opposite side moved to initial SL`
+              ? `${direction} three-target basket filled; fixed reversal placed beyond initial SL`
               : job.executionMode === "STRADDLE"
               ? `${direction} filled; sibling pending order cancelled (OCO)`
               : `${direction} market order filled`,
@@ -207,7 +207,7 @@ export class CTraderMockExecutionService implements OnModuleInit, OnModuleDestro
       await tx.executionReport.create({ data: { jobId, reportKey: `mock:${jobId}:tp${nextTarget}`,
         executionSource: "CTRADER_MOCK", phase: nextTarget === 3 ? "CLOSED" : "ACCEPTED", occurredAt: now,
         message: nextTarget === 3 ? "Mock TP3 reached; reversal orders cancelled"
-          : `Mock TP${nextTarget} reached; reversal protection moved to TP${nextTarget} minus buffer` } });
+          : `Mock TP${nextTarget} reached; fixed reversal price unchanged and volume reduced` } });
     });
   }
 

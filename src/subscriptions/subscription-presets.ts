@@ -1,0 +1,40 @@
+export const PLAN_PRESETS = {
+  TRIAL: {
+    name: "Trial",
+    priceUsd: 0,
+    durationDays: 7,
+    marketEnabled: true,
+    ocoEnabled: true,
+    multiEnabled: true,
+    newsReversalEnabled: true,
+    liveTradingEnabled: false,
+    maxAccounts: 1,
+    maxLot: 0.01,
+  },
+  BASIC: {
+    name: "Basic",
+    priceUsd: 19,
+    durationDays: 30,
+    marketEnabled: true,
+    ocoEnabled: true,
+    multiEnabled: false,
+    newsReversalEnabled: false,
+    liveTradingEnabled: true,
+    maxAccounts: 1,
+    maxLot: 0.1,
+  },
+  PRO: {
+    name: "Pro",
+    priceUsd: 39,
+    durationDays: 30,
+    marketEnabled: true,
+    ocoEnabled: true,
+    multiEnabled: true,
+    newsReversalEnabled: true,
+    liveTradingEnabled: true,
+    maxAccounts: 3,
+    maxLot: 1,
+  },
+} as const;
+
+export type PlanCode = keyof typeof PLAN_PRESETS;

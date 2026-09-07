@@ -18,6 +18,9 @@ import { CTraderMockExecutionService } from "../ctrader/ctrader-mock-execution.s
 import { ExecutionVenueDto } from "../trade-jobs/dto/create-trade-job.dto";
 import { ProbeStrategyService } from "../strategy-v2/probe-strategy.service";
 import { SafetyService } from "../safety/safety.service";
+import { SubscriptionsService } from "../subscriptions/subscriptions.service";
+import { CbotService } from "../cbot/cbot.service";
+import type { PlanCode } from "../subscriptions/subscription-presets";
 
 interface TradeDraft {
   eventId?: string;
@@ -44,6 +47,7 @@ interface TradeDraft {
   takeProfit3Points?: number;
   reversalTp1BufferPoints?: number;
   reversalTp2BufferPoints?: number;
+  reversalGapPoints?: number;
   managementSeconds?: number;
 }
 
@@ -54,6 +58,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly mode: "disabled" | "polling" | "webhook";
   private readonly publicBaseUrl?: string;
   private readonly webhookSecret?: string;
+  private readonly adminTelegramIds: Set<string>;
 
   constructor(
     config: ConfigService,
@@ -66,11 +71,15 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly cTraderMock: CTraderMockExecutionService,
     private readonly probeStrategy: ProbeStrategyService,
     private readonly safety: SafetyService,
+    private readonly subscriptions: SubscriptionsService,
+    private readonly cbots: CbotService,
   ) {
     const token = config.get<string>("TELEGRAM_BOT_TOKEN");
     this.mode = config.getOrThrow("TELEGRAM_MODE");
     this.publicBaseUrl = config.get<string>("PUBLIC_BASE_URL");
     this.webhookSecret = config.get<string>("TELEGRAM_WEBHOOK_SECRET");
+    this.adminTelegramIds = new Set((config.get<string>("TELEGRAM_ADMIN_IDS") ?? "")
+      .split(",").map((value) => value.trim()).filter(Boolean));
 
     if (token && this.mode !== "disabled") {
       this.bot = new Bot(token);
@@ -89,6 +98,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       { command: "start", description: "Открыть главное меню" },
       { command: "connect", description: "Подключить MT5" },
       { command: "connect_ctrader", description: "Подключить cTrader" },
+      { command: "connect_cbot", description: "Подключить cBot Cloud" },
+      { command: "subscription", description: "Моя подписка" },
+      { command: "plans", description: "Тарифы" },
       { command: "news", description: "Выбрать новость и создать задание" },
       { command: "custom", description: "Задание на своё время Ашхабада" },
       { command: "test", description: "Создать тестовое задание через 1 минуту" },
@@ -136,7 +148,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
     bot.command("start", async (ctx) => {
       if (!ctx.from) return;
-      await this.upsertContextUser(ctx.from);
+      const user = await this.upsertContextUser(ctx.from);
+      await this.subscriptions.ensureTrial(user.id);
       await ctx.reply(
         "MT5 News Trader\n\nПо умолчанию разрешены только demo-счета. Подключите терминал, затем можно будет создавать задания на новости.",
         { reply_markup: this.mainMenu() },
@@ -170,6 +183,47 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     bot.callbackQuery("connect_ctrader", async (ctx) => {
       await ctx.answerCallbackQuery();
       await this.sendCTraderAuthorization(ctx);
+    });
+
+    bot.command("connect_cbot", async (ctx) => this.sendCbotPairingCode(ctx));
+    bot.command("subscription", async (ctx) => this.sendSubscription(ctx));
+    bot.command("plans", async (ctx) => this.sendPlans(ctx));
+    bot.callbackQuery("connect_cbot", async (ctx) => { await ctx.answerCallbackQuery(); await this.sendCbotPairingCode(ctx); });
+    bot.callbackQuery("subscription", async (ctx) => { await ctx.answerCallbackQuery(); await this.sendSubscription(ctx); });
+
+    bot.command("admin_activate", async (ctx) => {
+      if (!ctx.from || !this.adminTelegramIds.has(String(ctx.from.id))) return void await ctx.reply("Недостаточно прав.");
+      const [, telegramId, rawPlan, rawDays] = (ctx.message?.text ?? "").trim().split(/\s+/);
+      const plan = rawPlan?.toUpperCase() as PlanCode;
+      const days = rawDays ? Number(rawDays) : undefined;
+      if (!/^\d{1,20}$/.test(telegramId ?? "") || !["TRIAL", "BASIC", "PRO"].includes(plan) ||
+        (days !== undefined && (!Number.isInteger(days) || days < 1 || days > 3660))) {
+        return void await ctx.reply("Формат: /admin_activate TELEGRAM_ID TRIAL|BASIC|PRO [days]");
+      }
+      try {
+        const subscription = await this.subscriptions.grantByTelegramId(telegramId, plan, days, String(ctx.from.id));
+        await ctx.reply(`Подписка ${subscription.plan.code} активирована до ${this.formatAshgabatTime(subscription.currentPeriodEnd)}.`);
+      } catch (error) { await ctx.reply(this.errorMessage(error)); }
+    });
+
+    bot.command("admin_users", async (ctx) => {
+      if (!ctx.from || !this.adminTelegramIds.has(String(ctx.from.id))) return void await ctx.reply("Недостаточно прав.");
+      const users = await this.subscriptions.listUsers(30);
+      if (!users.length) return void await ctx.reply("Пользователей нет.");
+      await ctx.reply(users.map((user) => {
+        const subscription = user.subscriptions[0];
+        return `${user.telegramId.toString()} @${user.telegramUsername ?? "—"}: ` +
+          `${subscription ? `${subscription.plan.code}/${subscription.status} до ${this.formatAshgabatTime(subscription.currentPeriodEnd)}` : "NO SUBSCRIPTION"}; ` +
+          `cBots=${user.cbotInstances.length}`;
+      }).join("\n"));
+    });
+
+    bot.command("admin_suspend", async (ctx) => {
+      if (!ctx.from || !this.adminTelegramIds.has(String(ctx.from.id))) return void await ctx.reply("Недостаточно прав.");
+      const [, telegramId] = (ctx.message?.text ?? "").trim().split(/\s+/);
+      if (!/^\d{1,20}$/.test(telegramId ?? "")) return void await ctx.reply("Формат: /admin_suspend TELEGRAM_ID");
+      try { await this.subscriptions.suspendByTelegramId(telegramId, String(ctx.from.id)); await ctx.reply("Подписка приостановлена."); }
+      catch (error) { await ctx.reply(this.errorMessage(error)); }
     });
 
     bot.command("status", async (ctx) => this.sendStatus(ctx));
@@ -261,7 +315,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     bot.callbackQuery("edit_reversal_template", async (ctx) => {
       await ctx.answerCallbackQuery(); const user = await this.users.findByTelegramId(BigInt(ctx.from.id)); if (!user) return;
       await this.sessions.set(user.id, "SETTING_REVERSAL_TEMPLATE", {});
-      await ctx.reply("Введите mode и 9 целых чисел через пробел:\nSPLIT_TOTAL|FULL_EACH entry SL TP1 TP2 TP3 buffer1 buffer2 pendingSeconds managementSeconds\nНапример: SPLIT_TOTAL 50 10 100 200 300 20 20 30 300");
+      await ctx.reply("Введите mode и 8 целых чисел через пробел:\nSPLIT_TOTAL|FULL_EACH entry SL TP1 TP2 TP3 reversalGap pendingSeconds managementSeconds\nНапример: SPLIT_TOTAL 50 10 100 200 300 10 30 300");
     });
 
     bot.command("news", async (ctx) => this.sendNews(ctx));
@@ -460,8 +514,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         takeProfitPoints: this.pipsToPoints(draft.symbol!, s.reversalTp1Pips),
         takeProfit2Points: this.pipsToPoints(draft.symbol!, s.reversalTp2Pips),
         takeProfit3Points: this.pipsToPoints(draft.symbol!, s.reversalTp3Pips),
-        reversalTp1BufferPoints: this.pipsToPoints(draft.symbol!, s.reversalTp1BufferPips),
-        reversalTp2BufferPoints: this.pipsToPoints(draft.symbol!, s.reversalTp2BufferPips),
+        reversalGapPoints: this.pipsToPoints(draft.symbol!, s.reversalGapPips),
         pendingExpirySeconds: s.reversalPendingExpirySeconds,
         managementSeconds: s.reversalManagementSeconds,
       };
@@ -476,7 +529,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         "Ордеров: 3 BUY + 3 SELL",
         `Entry/SL: ${s.reversalEntryPips}/${s.reversalSlPips} pips`,
         `TP: ${s.reversalTp1Pips}/${s.reversalTp2Pips}/${s.reversalTp3Pips} pips`,
-        `Защита после TP1/TP2: −${s.reversalTp1BufferPips}/−${s.reversalTp2BufferPips} pips`,
+        `Reversal: initial SL ± ${s.reversalGapPips} pips; после TP1/TP2 цена не переносится`,
         `Pending: T+${s.reversalPendingExpirySeconds} сек.; управление: ${s.reversalManagementSeconds} сек.`,
         "Разрешён максимум один разворот.",
       ].join("\n"), { reply_markup: new InlineKeyboard().text("Подтвердить", "confirm_trade").text("Отмена", "cancel_trade") });
@@ -551,6 +604,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           takeProfit3Points: draft.takeProfit3Points,
           reversalTp1BufferPoints: draft.reversalTp1BufferPoints,
           reversalTp2BufferPoints: draft.reversalTp2BufferPoints,
+          reversalGapPoints: draft.reversalGapPoints,
           managementSeconds: draft.managementSeconds,
           executeAt: draft.executeAt,
         });
@@ -679,6 +733,51 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private async sendCbotPairingCode(ctx: Context): Promise<void> {
+    if (!ctx.from) return;
+    try {
+      const user = await this.upsertContextUser(ctx.from);
+      await this.subscriptions.ensureTrial(user.id);
+      const result = await this.cbots.createPairingCode(user.id);
+      await ctx.reply([
+        `Код подключения cBot: ${result.code}`,
+        `Действует до ${this.formatAshgabatTime(result.expiresAt)} по Ашхабаду.`,
+        "",
+        "Введите код в параметре PairingCode приложения XAUUSD Trade Bot. Код одноразовый.",
+      ].join("\n"));
+    } catch (error) { await ctx.reply(this.errorMessage(error)); }
+  }
+
+  private async sendSubscription(ctx: Context): Promise<void> {
+    if (!ctx.from) return;
+    try {
+      const user = await this.upsertContextUser(ctx.from);
+      await this.subscriptions.ensureTrial(user.id);
+      const subscription = await this.subscriptions.currentForUser(user.id);
+      if (!subscription?.entitlement) return void await ctx.reply("Активной подписки нет. Выполните /plans.");
+      const e = subscription.entitlement;
+      await ctx.reply([
+        `Подписка: ${subscription.plan.name} (${subscription.status})`,
+        `Действует до: ${this.formatAshgabatTime(subscription.currentPeriodEnd)}`,
+        `Live trading: ${e.liveTradingEnabled ? "да" : "нет"}`,
+        `Режимы: ${[e.marketEnabled && "MARKET", e.ocoEnabled && "OCO", e.multiEnabled && "MULTI",
+          e.newsReversalEnabled && "NEWS_REVERSAL"].filter(Boolean).join(", ")}`,
+        `Счетов: до ${e.maxAccounts}`,
+        `Максимальный lot: ${e.maxLot.toString()}`,
+        `Проверка подписки: ${this.subscriptions.isEnforced() ? "ON" : "OFF (development)"}`,
+      ].join("\n"));
+    } catch (error) { await ctx.reply(this.errorMessage(error)); }
+  }
+
+  private async sendPlans(ctx: Context): Promise<void> {
+    const plans = await this.subscriptions.listPlans();
+    await ctx.reply(["Тарифы XAUUSD Trade Bot:", "", ...plans.map((plan) =>
+      `${plan.name}: $${plan.priceUsd.toString()} / ${plan.durationDays} дней\n` +
+      `${plan.liveTradingEnabled ? "Demo + Live" : "только Demo"}; до ${plan.maxAccounts} счет.; max lot ${plan.maxLot.toString()}\n` +
+      `Режимы: ${[plan.marketEnabled && "MARKET", plan.ocoEnabled && "OCO", plan.multiEnabled && "MULTI",
+        plan.newsReversalEnabled && "NEWS_REVERSAL"].filter(Boolean).join(", ")}`)].join("\n\n"));
+  }
+
   private async sendCTraderAuthorization(ctx: Context): Promise<void> {
     if (!ctx.from) return;
     if (!this.cTrader.isEnabled()) {
@@ -795,7 +894,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       `Volume mode: ${s.reversalVolumeMode}`,
       `Entry/SL: ${s.reversalEntryPips}/${s.reversalSlPips} pips`,
       `TP: ${s.reversalTp1Pips}/${s.reversalTp2Pips}/${s.reversalTp3Pips} pips`,
-      `Buffers TP1/TP2: ${s.reversalTp1BufferPips}/${s.reversalTp2BufferPips} pips`,
+      `Fixed reversal gap от initial SL: ${s.reversalGapPips} pips`,
+      "После TP1/TP2 SL и reversal entry не переносятся.",
       `Pending: T+${s.reversalPendingExpirySeconds} сек.`,
       `Управление: ${s.reversalManagementSeconds} сек.`].join("\n"),
     { reply_markup: new InlineKeyboard().text("Изменить шаблон", "edit_reversal_template") });
@@ -1045,13 +1145,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       if (session.state === "SETTING_REVERSAL_TEMPLATE") {
         const parts = ctx.message.text.trim().split(/\s+/);
         const mode = parts.shift(); const values = parts.map(Number);
-        if (!mode || !["SPLIT_TOTAL", "FULL_EACH"].includes(mode) || values.length !== 9 || values.some((value) => !Number.isInteger(value)))
-          return void await ctx.reply("Формат: SPLIT_TOTAL|FULL_EACH и ровно 9 целых чисел.");
+        if (!mode || !["SPLIT_TOTAL", "FULL_EACH"].includes(mode) || values.length !== 8 || values.some((value) => !Number.isInteger(value)))
+          return void await ctx.reply("Формат: SPLIT_TOTAL|FULL_EACH и ровно 8 целых чисел.");
         try {
           await this.users.updateNewsReversalTemplate(BigInt(ctx.from.id), {
             volumeMode: mode as "SPLIT_TOTAL" | "FULL_EACH", entryPips: values[0], slPips: values[1],
-            tp1Pips: values[2], tp2Pips: values[3], tp3Pips: values[4], tp1BufferPips: values[5],
-            tp2BufferPips: values[6], pendingExpirySeconds: values[7], managementSeconds: values[8],
+            tp1Pips: values[2], tp2Pips: values[3], tp3Pips: values[4], reversalGapPips: values[5],
+            pendingExpirySeconds: values[6], managementSeconds: values[7],
           });
           await this.sessions.clear(user.id); await ctx.reply("NEWS REVERSAL template сохранён.");
         } catch (error) { await ctx.reply(this.errorMessage(error)); }
@@ -1217,8 +1317,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
   private mainMenu(): InlineKeyboard {
     return new InlineKeyboard()
-      .text("Подключить MT5", "connect")
-      .text("Подключить cTrader", "connect_ctrader")
+      .text("Подключить cBot", "connect_cbot")
+      .text("Подписка", "subscription")
       .row()
       .text("Новости", "news")
       .text("Тест +1 мин", "test_trade")

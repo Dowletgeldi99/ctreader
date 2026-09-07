@@ -12,6 +12,8 @@ import { EconomicEventsModule } from "./economic-events/economic-events.module";
 import { CTraderModule } from "./ctrader/ctrader.module";
 import { ProbeStrategyModule } from "./strategy-v2/probe-strategy.module";
 import { SafetyModule } from "./safety/safety.module";
+import { SubscriptionsModule } from "./subscriptions/subscriptions.module";
+import { CbotModule } from "./cbot/cbot.module";
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { SafetyModule } from "./safety/safety.module";
       validate: validateEnvironment,
     }),
     PrismaModule,
+    SubscriptionsModule,
+    CbotModule,
     SafetyModule,
     HealthModule,
     UsersModule,

@@ -25,6 +25,8 @@ const environmentSchema = z.object({
   CTRADER_MARGIN_BUFFER_PERCENT: z.coerce.number().min(0).max(500).default(25),
   CTRADER_JOB_LEASE_SECONDS: z.coerce.number().int().min(15).max(300).default(45),
   PAIRING_CODE_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
+  SUBSCRIPTIONS_ENFORCED: booleanFromString,
+  TELEGRAM_ADMIN_IDS: z.string().default(""),
   CTRADER_ENABLED: booleanFromString,
   CTRADER_MOCK_MODE: booleanFromString,
   CTRADER_CLIENT_ID: z.string().min(1).optional().or(z.literal("")),

@@ -180,6 +180,12 @@ export class CreateTradeJobDto {
 
   @IsOptional()
   @IsInt()
+  @Min(1)
+  @Max(1_000_000)
+  reversalGapPoints?: number;
+
+  @IsOptional()
+  @IsInt()
   @Min(30)
   @Max(3600)
   managementSeconds?: number;

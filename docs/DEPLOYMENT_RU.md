@@ -598,7 +598,7 @@ curl -X POST "https://$DOMAIN/api/v1/admin/safety/resume" \
 Рекомендуемый начальный template:
 
 ```text
-SPLIT_TOTAL 50 10 100 200 300 20 20 30 300
+SPLIT_TOTAL 50 10 100 200 300 10 30 300
 ```
 
 Расшифровка:
@@ -610,8 +610,7 @@ SPLIT_TOTAL — выбранный lot является общим объёмо�
 100         — TP1
 200         — TP2
 300         — TP3
-20          — buffer после TP1
-20          — buffer после TP2
+10          — reversal gap после первоначального SL
 30          — initial pending expiry, секунд
 300         — maximum management time, секунд
 ```
@@ -639,11 +638,11 @@ SPLIT_TOTAL — выбранный lot является общим объёмо�
 - TP равны 100/200/300 pips;
 - общий volume для `SPLIT TOTAL 0.1` равен 0.1 lot;
 - после первого fill поздние initial pending не остаются;
-- противоположная сторона переносится к первоначальному SL;
-- после TP1 остаются две reversal-части;
-- protection переносится к `TP1 − buffer` для BUY или `TP1 + buffer` для SELL;
-- после TP2 остаётся одна reversal-часть;
-- protection переносится к уровню TP2 с buffer;
+- противоположная сторона ставится на 10 pips дальше первоначального SL;
+- после TP1 остаются две reversal-части, но reversal entry не переносится;
+- SL оставшихся initial-позиций после TP1 не переносится;
+- после TP2 остаётся одна reversal-часть, но reversal entry не переносится;
+- SL оставшейся initial-позиции после TP2 не переносится;
 - после TP3 все pending задания отменены;
 - повторный reversal невозможен.
 
@@ -860,4 +859,3 @@ docker system df
 - [ ] NEWS REVERSAL проверен с 0.1 lot.
 - [ ] Recovery после restart проверен.
 - [ ] Backup создан и скопирован вне VPS.
-

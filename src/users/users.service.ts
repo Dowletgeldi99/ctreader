@@ -110,19 +110,17 @@ export class UsersService {
   async updateNewsReversalTemplate(telegramId: bigint, values: {
     volumeMode: VolumeAllocationMode; entryPips: number; slPips: number;
     tp1Pips: number; tp2Pips: number; tp3Pips: number;
-    tp1BufferPips: number; tp2BufferPips: number;
+    reversalGapPips: number;
     pendingExpirySeconds: number; managementSeconds: number;
   }) {
     const user = await this.prisma.user.findUnique({ where: { telegramId } });
     if (!user) throw new NotFoundException("Telegram user not found");
     const pips = [values.entryPips, values.slPips, values.tp1Pips, values.tp2Pips, values.tp3Pips,
-      values.tp1BufferPips, values.tp2BufferPips];
+      values.reversalGapPips];
     if (pips.some((value) => !Number.isInteger(value) || value < 1 || value > 100_000))
       throw new BadRequestException("Pips must be integers from 1 to 100000");
     if (!(values.tp1Pips < values.tp2Pips && values.tp2Pips < values.tp3Pips))
       throw new BadRequestException("TP1, TP2 and TP3 must be strictly increasing");
-    if (values.tp1BufferPips >= values.tp1Pips || values.tp2BufferPips >= values.tp2Pips)
-      throw new BadRequestException("Protection buffers must be smaller than TP distances");
     if (!Number.isInteger(values.pendingExpirySeconds) || values.pendingExpirySeconds < 1 || values.pendingExpirySeconds > 300)
       throw new BadRequestException("Pending expiry must be 1-300 seconds");
     if (!Number.isInteger(values.managementSeconds) || values.managementSeconds < 30 || values.managementSeconds > 3600)
@@ -131,7 +129,7 @@ export class UsersService {
       reversalVolumeMode: values.volumeMode, reversalEntryPips: values.entryPips,
       reversalSlPips: values.slPips, reversalTp1Pips: values.tp1Pips,
       reversalTp2Pips: values.tp2Pips, reversalTp3Pips: values.tp3Pips,
-      reversalTp1BufferPips: values.tp1BufferPips, reversalTp2BufferPips: values.tp2BufferPips,
+      reversalGapPips: values.reversalGapPips,
       reversalPendingExpirySeconds: values.pendingExpirySeconds,
       reversalManagementSeconds: values.managementSeconds,
     }});

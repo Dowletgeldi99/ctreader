@@ -8,6 +8,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { SafetyService } from "../safety/safety.service";
+import { SubscriptionsService } from "../subscriptions/subscriptions.service";
 import type {
   Agent,
   ExecutionPhase,
@@ -44,6 +45,7 @@ export class TradeJobsService {
     private readonly prisma: PrismaService,
     config: ConfigService,
     private readonly safety: SafetyService,
+    private readonly subscriptions: SubscriptionsService,
   ) {
     this.allowRealTrading = config.getOrThrow<boolean>("ALLOW_REAL_TRADING");
     this.maxRiskPercent = config.getOrThrow<number>("MAX_RISK_PERCENT");
@@ -78,6 +80,9 @@ export class TradeJobsService {
       throw new BadRequestException("Trading or Expert Advisor trading is disabled in MT5");
     }
     const isReal = mt5Account?.environment === "REAL" || cTraderAccount?.environment === "LIVE";
+    await this.subscriptions.ensureTrial(user.id);
+    await this.subscriptions.assertCanCreateJob(user.id, dto.executionMode, isReal,
+      dto.riskMode === RiskModeDto.FIXED_LOT ? dto.fixedLot : null);
     if (isReal && (!this.allowRealTrading || !user.settings.realTradingEnabled)) {
       throw new ForbiddenException("Real trading is disabled by a safety policy");
     }
@@ -97,13 +102,10 @@ export class TradeJobsService {
       if (!isCTrader) throw new BadRequestException("NEWS REVERSAL currently requires a cTrader account");
       if (dto.riskMode !== RiskModeDto.FIXED_LOT || !dto.fixedLot)
         throw new BadRequestException("NEWS REVERSAL currently requires fixed lot");
-      if (!dto.volumeAllocationMode || !dto.takeProfit2Points || !dto.takeProfit3Points ||
-          !dto.reversalTp1BufferPoints || !dto.reversalTp2BufferPoints)
+      if (!dto.volumeAllocationMode || !dto.takeProfit2Points || !dto.takeProfit3Points || !dto.reversalGapPoints)
         throw new BadRequestException("All NEWS REVERSAL parameters are required");
       if (!(dto.takeProfitPoints < dto.takeProfit2Points && dto.takeProfit2Points < dto.takeProfit3Points))
         throw new BadRequestException("NEWS REVERSAL take profits must be strictly increasing");
-      if (dto.reversalTp1BufferPoints >= dto.takeProfitPoints || dto.reversalTp2BufferPoints >= dto.takeProfit2Points)
-        throw new BadRequestException("Reversal buffer must be smaller than its take-profit distance");
     }
 
     let executeAt = new Date(dto.executeAt);
@@ -195,6 +197,7 @@ export class TradeJobsService {
           takeProfit3Points: dto.takeProfit3Points,
           reversalTp1BufferPoints: dto.reversalTp1BufferPoints,
           reversalTp2BufferPoints: dto.reversalTp2BufferPoints,
+          reversalGapPoints: dto.reversalGapPoints,
           maxReversals: dto.executionMode === ExecutionModeDto.NEWS_REVERSAL ? 1 : undefined,
           newsReversalState: dto.executionMode === ExecutionModeDto.NEWS_REVERSAL ? "WAITING_INITIAL_FILL" : undefined,
           managementExpiresAt: dto.executionMode === ExecutionModeDto.NEWS_REVERSAL

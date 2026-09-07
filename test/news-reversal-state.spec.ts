@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { protectionPrice, reversalTargetsAfter } from "../src/ctrader/news-reversal-state";
+import { fixedReversalPrice, reversalTargetsAfter } from "../src/ctrader/news-reversal-state";
 
 describe("NEWS REVERSAL state math", () => {
-  it("moves BUY protection from initial SL to TP1 and TP2 buffers", () => {
-    expect(protectionPrice({ direction: "BUY", entryPrice: 4505, stopDistance: 1 })).toBe(4504);
-    expect(protectionPrice({ direction: "BUY", entryPrice: 4505, stopDistance: 1,
-      reachedTakeProfitPrice: 4515, bufferDistance: 2 })).toBe(4513);
-    expect(protectionPrice({ direction: "BUY", entryPrice: 4505, stopDistance: 1,
-      reachedTakeProfitPrice: 4525, bufferDistance: 2 })).toBe(4523);
+  it("places BUY reversal beyond the initial SL", () => {
+    expect(fixedReversalPrice({ direction: "BUY", entryPrice: 4505, stopDistance: 1, reversalGap: 1 })).toBe(4503);
   });
 
-  it("mirrors protection for SELL", () => {
-    expect(protectionPrice({ direction: "SELL", entryPrice: 4495, stopDistance: 1 })).toBe(4496);
-    expect(protectionPrice({ direction: "SELL", entryPrice: 4495, stopDistance: 1,
-      reachedTakeProfitPrice: 4485, bufferDistance: 2 })).toBe(4487);
+  it("mirrors fixed reversal for SELL", () => {
+    expect(fixedReversalPrice({ direction: "SELL", entryPrice: 4495, stopDistance: 1, reversalGap: 1 })).toBe(4497);
   });
 
   it("reduces reversal targets after each take profit", () => {

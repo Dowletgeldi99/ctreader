@@ -8,7 +8,7 @@ import { calculateRiskVolumeInCents } from "./ctrader-risk";
 import { SafetyService } from "../safety/safety.service";
 import { randomUUID } from "crypto";
 import { allocateNewsReversalVolume } from "./news-reversal-volume";
-import { protectionPrice as calculateProtectionPrice, reversalTargetsAfter } from "./news-reversal-state";
+import { fixedReversalPrice, reversalTargetsAfter } from "./news-reversal-state";
 
 interface Runtime {
   client: CTraderJsonClient;
@@ -418,32 +418,28 @@ export class CTraderExecutionService implements OnModuleInit, OnModuleDestroy {
         leg.direction !== job.activeDirection && leg.brokerPositionId);
       for (const leg of accidentalOpposite) await this.closeLegPosition(runtime, leg);
 
-      const reachedTp = closedTp > 0
-        ? Number(job.legs.find((leg) => leg.direction === job.activeDirection && leg.purpose === "INITIAL" && leg.targetNumber === closedTp)?.takeProfitPrice)
-        : undefined;
-      const reference = calculateProtectionPrice({ direction: job.activeDirection, entryPrice: Number(active[0].entryPrice),
-        stopDistance: job.stopLossPoints * runtime.point!, reachedTakeProfitPrice: reachedTp,
-        bufferDistance: closedTp > 0
-          ? (closedTp === 1 ? job.reversalTp1BufferPoints! : job.reversalTp2BufferPoints!) * runtime.point!
-          : undefined });
-      const protectionPrice = this.round(reference, runtime.digits!);
+      const gapPoints = job.reversalGapPoints ?? 0;
+      if (gapPoints < 1) throw new Error("NEWS REVERSAL fixed gap is missing");
+      const reference = fixedReversalPrice({ direction: job.activeDirection, entryPrice: Number(active[0].entryPrice),
+        stopDistance: job.stopLossPoints * runtime.point!, reversalGap: gapPoints * runtime.point! });
+      const reversalEntryPrice = this.round(reference, runtime.digits!);
       const reverseTargets = reversalTargetsAfter(closedTp, [job.takeProfitPoints, job.takeProfit2Points!, job.takeProfit3Points!]);
       const sortedActive = [...active].sort((a, b) => a.targetNumber - b.targetNumber);
       for (let index = 0; index < sortedActive.length; index += 1) {
         const source = sortedActive[index]; const targetPoints = reverseTargets[Math.min(index, reverseTargets.length - 1)];
         const apiVolume = Math.round(Number(source.plannedVolume) * runtime.lotSize!);
-        const slPrice = this.round(opposite === "BUY" ? protectionPrice - job.stopLossPoints * runtime.point! : protectionPrice + job.stopLossPoints * runtime.point!, runtime.digits!);
-        const tpPrice = this.round(opposite === "BUY" ? protectionPrice + targetPoints * runtime.point! : protectionPrice - targetPoints * runtime.point!, runtime.digits!);
+        const slPrice = this.round(opposite === "BUY" ? reversalEntryPrice - job.stopLossPoints * runtime.point! : reversalEntryPrice + job.stopLossPoints * runtime.point!, runtime.digits!);
+        const tpPrice = this.round(opposite === "BUY" ? reversalEntryPrice + targetPoints * runtime.point! : reversalEntryPrice - targetPoints * runtime.point!, runtime.digits!);
         const leg = await this.prisma.tradeJobLeg.upsert({ where: { jobId_purpose_direction_targetNumber_revision: {
           jobId, purpose: "REVERSAL", direction: opposite, targetNumber: index + 1, revision: closedTp,
-        } }, update: { plannedVolume: source.plannedVolume, entryPrice: protectionPrice, stopLossPrice: slPrice,
+        } }, update: { plannedVolume: source.plannedVolume, entryPrice: reversalEntryPrice, stopLossPrice: slPrice,
           takeProfitPrice: tpPrice, status: "PLANNED", brokerOrderId: null, brokerPositionId: null },
         create: { jobId, purpose: "REVERSAL", direction: opposite, targetNumber: index + 1, revision: closedTp,
-          legNumber: index + 1, plannedVolume: source.plannedVolume, entryPrice: protectionPrice,
+          legNumber: index + 1, plannedVolume: source.plannedVolume, entryPrice: reversalEntryPrice,
           stopLossPrice: slPrice, takeProfitPrice: tpPrice } });
         const orderId = await this.place(jobId, runtime.client, {
           ctidTraderAccountId: this.safeId(runtime.ctid, "ctidTraderAccountId"), symbolId: this.safeId(runtime.symbolId, "symbolId"),
-          volume: apiVolume, orderType: 3, tradeSide: opposite === "BUY" ? 1 : 2, stopPrice: protectionPrice,
+          volume: apiVolume, orderType: 3, tradeSide: opposite === "BUY" ? 1 : 2, stopPrice: reversalEntryPrice,
           relativeStopLoss: Math.round(job.stopLossPoints * runtime.point! * 100_000),
           relativeTakeProfit: Math.round(targetPoints * runtime.point! * 100_000), timeInForce: 1,
           expirationTimestamp: job.managementExpiresAt?.getTime(),
@@ -453,12 +449,6 @@ export class CTraderExecutionService implements OnModuleInit, OnModuleDestroy {
         runtime.orderIds.push(orderId);
         await this.prisma.tradeJobLeg.update({ where: { id: leg.id }, data: { brokerOrderId: orderId, status: "SUBMITTED" } });
       }
-      // Reversal protection is accepted before tightening the active positions.
-      for (const leg of active) if (leg.brokerPositionId) {
-        await runtime.client.request(2110, { ctidTraderAccountId: this.safeId(runtime.ctid, "ctidTraderAccountId"),
-          positionId: this.safeId(leg.brokerPositionId, "positionId"), stopLoss: protectionPrice }, [2126]);
-        await this.prisma.tradeJobLeg.update({ where: { id: leg.id }, data: { stopLossPrice: protectionPrice } });
-      }
       await this.prisma.tradeJob.update({ where: { id: jobId }, data: {
         newsReversalState: closedTp === 0
           ? (job.activeDirection === "BUY" ? "INITIAL_BUY_ACTIVE" : "INITIAL_SELL_ACTIVE")
@@ -466,7 +456,9 @@ export class CTraderExecutionService implements OnModuleInit, OnModuleDestroy {
         status: "MANAGED",
       }});
       await this.report(jobId, `ctrader:${jobId}:protection:${closedTp}:${Date.now()}`, "ACCEPTED",
-        `Reversal protection moved to stage ${closedTp} at ${protectionPrice}`);
+        closedTp === 0
+          ? `Fixed reversal placed ${gapPoints} points beyond initial SL at ${reversalEntryPrice}`
+          : `TP${closedTp} reached; reversal volume reduced without moving fixed entry ${reversalEntryPrice}`);
     } catch (error) {
       await this.report(jobId, `ctrader:${jobId}:protection-error:${Date.now()}`, "ERROR",
         `NEWS REVERSAL protection failed: ${error instanceof Error ? error.message : "unknown error"}`);
