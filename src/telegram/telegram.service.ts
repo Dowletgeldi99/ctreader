@@ -353,8 +353,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const fullUser = await this.users.findByTelegramId(BigInt(ctx.from.id));
       const mt5Accounts = fullUser?.accounts ?? [];
       const cTraderAccounts = fullUser ? await this.cTrader.listUserAccounts(fullUser.id) : [];
-      if (mt5Accounts.length + cTraderAccounts.length === 0) {
-        await ctx.reply("Сначала подключите MT5 или cTrader.");
+      const cbotAccounts = fullUser?.cbotInstances ?? [];
+      if (mt5Accounts.length + cTraderAccounts.length + cbotAccounts.length === 0) {
+        await ctx.reply("Сначала подключите MT5, cTrader или cBot.");
         return;
       }
       const keyboard = new InlineKeyboard();
@@ -370,12 +371,15 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           `account:CTRADER:${account.id}`,
         ).row();
       }
+      for (const account of cbotAccounts) keyboard.text(
+        `cBot · ${account.accountNumber.toString()} @ ${account.broker} ${account.environment}`,
+        `account:CBOT:${account.id}`).row();
       await ctx.reply(`Новость: ${event.title}\nВыберите торговый счёт:`, {
         reply_markup: keyboard,
       });
     });
 
-    bot.callbackQuery(/^account:(MT5|CTRADER):(.+)$/, async (ctx) => {
+    bot.callbackQuery(/^account:(MT5|CTRADER|CBOT):(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const user = await this.users.findByTelegramId(BigInt(ctx.from.id));
       if (!user) return;
@@ -384,7 +388,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const cTraderAccounts = await this.cTrader.listUserAccounts(user.id);
       const account = executionVenue === ExecutionVenueDto.MT5
         ? user.accounts.find((item) => item.id === ctx.match[2])
-        : cTraderAccounts.find((item) => item.id === ctx.match[2]);
+        : executionVenue === ExecutionVenueDto.CTRADER
+          ? cTraderAccounts.find((item) => item.id === ctx.match[2])
+          : user.cbotInstances.find((item) => item.id === ctx.match[2]);
       if (!session || session.state !== "SELECT_ACCOUNT" || !account) {
         await ctx.reply("Сессия устарела. Начните заново: /news или /test");
         return;
@@ -396,13 +402,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         executionVenue,
         symbol: user.settings?.defaultSymbol ?? "XAUUSD",
       });
-      await ctx.reply(`Символ: ${user.settings?.defaultSymbol ?? "XAUUSD"}\nВыберите lot:`, {
-        reply_markup: new InlineKeyboard()
-          .text("0.1", "trade_lot:0.1").text("0.5", "trade_lot:0.5").text("1.0", "trade_lot:1")
-          .row().text(`Default (${user.settings?.defaultFixedLot.toString() ?? "0.01"})`, "trade_lot:DEFAULT")
-          .row().text(`Risk % (${user.settings?.defaultRiskPercent.toString() ?? "0.25"}%)`, "trade_lot:RISK")
-          .row().text("Отмена", "cancel_trade"),
-      });
+      const lotKeyboard = new InlineKeyboard()
+        .text("0.1", "trade_lot:0.1").text("0.5", "trade_lot:0.5").text("1.0", "trade_lot:1")
+        .row().text(`Default (${user.settings?.defaultFixedLot.toString() ?? "0.01"})`, "trade_lot:DEFAULT");
+      if (executionVenue !== ExecutionVenueDto.CBOT)
+        lotKeyboard.row().text(`Risk % (${user.settings?.defaultRiskPercent.toString() ?? "0.25"}%)`, "trade_lot:RISK");
+      lotKeyboard.row().text("Отмена", "cancel_trade");
+      await ctx.reply(`Символ: ${user.settings?.defaultSymbol ?? "XAUUSD"}\nВыберите lot:`, { reply_markup: lotKeyboard });
     });
 
     bot.callbackQuery(/^trade_lot:(DEFAULT|RISK|0\.1|0\.5|1)$/, async (ctx) => {
@@ -413,6 +419,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       if (!session || session.state !== "SELECT_LOT") return void await ctx.reply("Сессия устарела. Начните заново.");
       const draft = session.data as unknown as TradeDraft;
       const useRisk = ctx.match[1] === "RISK";
+      if (useRisk && draft.executionVenue === ExecutionVenueDto.CBOT)
+        return void await ctx.reply("cBot исполняет только fixed lot. Выберите lot заново через /news или /test.");
       const fixedLot = useRisk ? undefined : ctx.match[1] === "DEFAULT" ? Number(user.settings.defaultFixedLot) : Number(ctx.match[1]);
       await this.sessions.set(user.id, "SELECT_EXECUTION_MODE", { ...draft, fixedLot,
         riskMode: useRisk ? RiskModeDto.RISK_PERCENT : RiskModeDto.FIXED_LOT,
@@ -472,8 +480,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       if (executionMode === ExecutionModeDto.NEWS_REVERSAL) {
-        if (draft.executionVenue !== ExecutionVenueDto.CTRADER) {
-          await ctx.reply("NEWS REVERSAL пока доступен только для cTrader.");
+        if (![ExecutionVenueDto.CTRADER, ExecutionVenueDto.CBOT].includes(draft.executionVenue!)) {
+          await ctx.reply("NEWS REVERSAL доступен только для cTrader/cBot.");
           return;
         }
         if (draft.riskMode !== RiskModeDto.FIXED_LOT) {
@@ -832,9 +840,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           `${account.traderLogin?.toString() ?? account.ctidTraderAccountId.toString()} @ ${account.brokerTitle ?? "cTrader"}: ${account.environment}`,
         ).join("\n")
       : "cTrader-счета ещё не подключены";
+    const cbotStatus = user.cbotInstances.length
+      ? user.cbotInstances.map((instance) =>
+          `${instance.accountNumber.toString()} @ ${instance.broker}: ${instance.environment}, ${instance.status}, last seen ${instance.lastSeenAt?.toISOString() ?? "never"}`,
+        ).join("\n")
+      : "cBot-инстансы ещё не подключены";
     const safety = await this.safety.status();
 
-    await ctx.reply(`Торговля: ${safety.halted ? `STOPPED (${safety.reason ?? "kill switch"})` : "ACTIVE"}\n\nАгенты MT5:\n${agents}\n\nСчета MT5:\n${accounts}\n\nСчета cTrader:\n${cTraderStatus}`);
+    await ctx.reply(`Торговля: ${safety.halted ? `STOPPED (${safety.reason ?? "kill switch"})` : "ACTIVE"}\n\nАгенты MT5:\n${agents}\n\nСчета MT5:\n${accounts}\n\nСчета cTrader Open API:\n${cTraderStatus}\n\ncBot Cloud:\n${cbotStatus}`);
   }
 
   private async sendSettings(ctx: Context): Promise<void> {
@@ -940,8 +953,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const fullUser = await this.users.findByTelegramId(BigInt(ctx.from.id));
     const mt5Accounts = fullUser?.accounts ?? [];
     const cTraderAccounts = fullUser ? await this.cTrader.listUserAccounts(fullUser.id) : [];
-    if (mt5Accounts.length + cTraderAccounts.length === 0) {
-      await ctx.reply("Сначала подключите MT5 или cTrader.");
+    const cbotAccounts = fullUser?.cbotInstances ?? [];
+    if (mt5Accounts.length + cTraderAccounts.length + cbotAccounts.length === 0) {
+      await ctx.reply("Сначала подключите MT5, cTrader или cBot.");
       return;
     }
 
@@ -962,6 +976,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         .text(`cTrader · ${account.traderLogin?.toString() ?? account.ctidTraderAccountId.toString()} ${account.environment}`, `account:CTRADER:${account.id}`)
         .row();
     }
+    for (const account of cbotAccounts) keyboard
+      .text(`cBot · ${account.accountNumber.toString()} @ ${account.broker} ${account.environment}`, `account:CBOT:${account.id}`).row();
     await ctx.reply(`Тестовое задание\nВремя Ашхабад: ${this.formatAshgabatTime(new Date(executeAt))}\nВыберите торговый счёт:`, {
       reply_markup: keyboard,
     });
@@ -987,7 +1003,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const keyboard = new InlineKeyboard();
       if (["SCHEDULED", "SYNCED"].includes(job.status)) {
         keyboard.text("Отменить", `cancel_job:${job.id}`);
-      } else if (job.executionVenue === "CTRADER") {
+      } else if (["CTRADER", "CBOT"].includes(job.executionVenue)) {
         keyboard.text("Отменить pending", `cancel_job:${job.id}`).row()
           .text("Закрыть позиции", `request_close_job:${job.id}`);
       }
@@ -999,6 +1015,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
           `Статус: ${job.status}`,
           `Счёт: ${job.executionVenue === "CTRADER"
             ? `${job.cTraderAccount?.traderLogin?.toString() ?? "cTrader"} @ ${job.cTraderAccount?.brokerTitle ?? "cTrader"}`
+            : job.executionVenue === "CBOT"
+              ? `${job.cbotInstance?.accountNumber.toString() ?? "cBot"} @ ${job.cbotInstance?.broker ?? "cTrader"}`
             : `${job.account?.login.toString()} @ ${job.account?.server}`}`,
         ].join("\n"),
         keyboard.inline_keyboard.length > 0 ? { reply_markup: keyboard } : undefined,
@@ -1115,8 +1133,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       const cTraderAccounts = await this.cTrader.listUserAccounts(user.id);
-      if (user.accounts.length + cTraderAccounts.length === 0) {
-        await ctx.reply("Сначала подключите MT5 или cTrader.");
+      const cbotAccounts = user.cbotInstances;
+      if (user.accounts.length + cTraderAccounts.length + cbotAccounts.length === 0) {
+        await ctx.reply("Сначала подключите MT5, cTrader или cBot.");
         return;
       }
       await this.sessions.set(user.id, "SELECT_ACCOUNT", {
@@ -1130,6 +1149,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       for (const account of cTraderAccounts) {
         keyboard.text(`cTrader · ${account.traderLogin?.toString() ?? account.ctidTraderAccountId.toString()} ${account.environment}`, `account:CTRADER:${account.id}`).row();
       }
+      for (const account of cbotAccounts) keyboard.text(
+        `cBot · ${account.accountNumber.toString()} @ ${account.broker} ${account.environment}`,
+        `account:CBOT:${account.id}`).row();
       await ctx.reply(`Custom-задание\nВремя Ашхабад: ${this.formatAshgabatTime(executeAt)}\nВыберите торговый счёт:`, { reply_markup: keyboard });
       return;
     }

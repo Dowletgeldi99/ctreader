@@ -66,20 +66,26 @@ export class TradeJobsService {
     if (user.status !== "ACTIVE") throw new ForbiddenException("User is suspended");
 
     const isCTrader = dto.executionVenue === ExecutionVenueDto.CTRADER;
-    const mt5Account = isCTrader
+    const isCbot = dto.executionVenue === ExecutionVenueDto.CBOT;
+    const mt5Account = isCTrader || isCbot
       ? null
       : await this.prisma.tradingAccount.findUnique({ where: { id: dto.accountId } });
     const cTraderAccount = isCTrader
       ? await this.prisma.cTraderAccount.findUnique({ where: { id: dto.accountId } })
       : null;
-    const selectedAccount = mt5Account ?? cTraderAccount;
+    const cbotInstance = isCbot
+      ? await this.prisma.cbotInstance.findUnique({ where: { id: dto.accountId } })
+      : null;
+    const selectedAccount = mt5Account ?? cTraderAccount ?? cbotInstance;
     if (!selectedAccount || selectedAccount.userId !== user.id) {
       throw new NotFoundException("Trading account not found");
     }
     if (mt5Account && (!mt5Account.tradeAllowed || !mt5Account.expertTradeAllowed)) {
       throw new BadRequestException("Trading or Expert Advisor trading is disabled in MT5");
     }
-    const isReal = mt5Account?.environment === "REAL" || cTraderAccount?.environment === "LIVE";
+    if (isCbot && dto.riskMode !== RiskModeDto.FIXED_LOT)
+      throw new BadRequestException("cBot execution currently requires fixed lot");
+    const isReal = mt5Account?.environment === "REAL" || cTraderAccount?.environment === "LIVE" || cbotInstance?.environment === "LIVE";
     await this.subscriptions.ensureTrial(user.id);
     await this.subscriptions.assertCanCreateJob(user.id, dto.executionMode, isReal,
       dto.riskMode === RiskModeDto.FIXED_LOT ? dto.fixedLot : null);
@@ -90,16 +96,17 @@ export class TradeJobsService {
       throw new BadRequestException("entryDistancePoints is required for pending modes");
     }
     if (dto.executionMode === ExecutionModeDto.MULTI) {
-      if (!isCTrader && (!mt5Account || !["DEMO", "REAL"].includes(mt5Account.environment))) {
+      if (!isCTrader && !isCbot && (!mt5Account || !["DEMO", "REAL"].includes(mt5Account.environment))) {
         throw new BadRequestException("MULTI requires an MT5 demo or real account");
       }
-      if (!isCTrader && mt5Account?.marginMode !== "HEDGING") throw new BadRequestException("MULTI requires an MT5 hedging account");
+      if (!isCTrader && !isCbot && mt5Account?.marginMode !== "HEDGING")
+        throw new BadRequestException("MULTI requires an MT5 hedging account");
       if (!dto.multiTradesPerSide || !dto.multiNextStepPoints || !dto.multiNextSlPoints || !dto.multiNextTpPoints) {
         throw new BadRequestException("All MULTI parameters are required");
       }
     }
     if (dto.executionMode === ExecutionModeDto.NEWS_REVERSAL) {
-      if (!isCTrader) throw new BadRequestException("NEWS REVERSAL currently requires a cTrader account");
+      if (!isCTrader && !isCbot) throw new BadRequestException("NEWS REVERSAL requires a cTrader or cBot account");
       if (dto.riskMode !== RiskModeDto.FIXED_LOT || !dto.fixedLot)
         throw new BadRequestException("NEWS REVERSAL currently requires fixed lot");
       if (!dto.volumeAllocationMode || !dto.takeProfit2Points || !dto.takeProfit3Points || !dto.reversalGapPoints)
@@ -157,9 +164,9 @@ export class TradeJobsService {
       realTradingUserEnabled: user.settings.realTradingEnabled,
       maxRiskPercent: this.maxRiskPercent,
       maxFixedLot: this.maxFixedLot,
-      executionVenue: isCTrader ? "CTRADER" : "MT5",
+      executionVenue: isCbot ? "CBOT" : isCTrader ? "CTRADER" : "MT5",
       accountEnvironment: selectedAccount.environment,
-      accountServer: mt5Account?.server ?? cTraderAccount?.brokerTitle ?? "cTrader",
+      accountServer: mt5Account?.server ?? cTraderAccount?.brokerTitle ?? cbotInstance?.broker ?? "cTrader",
       createdFrom: "telegram",
     };
     const mockMidPrice = dto.symbol.toUpperCase().includes("XAU") ? 2_500 : 1.1;
@@ -171,7 +178,8 @@ export class TradeJobsService {
           userId: user.id,
           accountId: mt5Account?.id,
           cTraderAccountId: cTraderAccount?.id,
-          executionVenue: isCTrader ? "CTRADER" : "MT5",
+          cbotInstanceId: cbotInstance?.id,
+          executionVenue: isCbot ? "CBOT" : isCTrader ? "CTRADER" : "MT5",
           economicEventId: dto.economicEventId,
           idempotencyKey,
           symbol: dto.symbol,
@@ -377,7 +385,7 @@ export class TradeJobsService {
     if (!user) throw new NotFoundException("Telegram user not found");
     return this.prisma.tradeJob.findMany({
       where: { userId: user.id, status: { in: ACTIVE_JOB_STATUSES } },
-      include: { economicEvent: true, account: true, cTraderAccount: true },
+      include: { economicEvent: true, account: true, cTraderAccount: true, cbotInstance: true },
       orderBy: { executeAt: "asc" },
       take: 20,
     });
@@ -414,7 +422,7 @@ export class TradeJobsService {
     });
     if (!job) throw new NotFoundException("Trade job not found");
     if (!["SCHEDULED", "SYNCED"].includes(job.status)) {
-      if (job.executionVenue !== "CTRADER" || !ACTIVE_JOB_STATUSES.includes(job.status))
+      if (!["CTRADER", "CBOT"].includes(job.executionVenue) || !ACTIVE_JOB_STATUSES.includes(job.status))
         throw new ConflictException(`Job cannot be cancelled from state ${job.status}`);
       return this.prisma.tradeJob.update({ where: { id: job.id }, data: { cancelRequestedAt: new Date() } });
     }
@@ -448,7 +456,7 @@ export class TradeJobsService {
   async requestCloseForTelegramUser(telegramId: bigint, jobId: string) {
     const job = await this.prisma.tradeJob.findFirst({ where: { id: jobId, user: { telegramId } } });
     if (!job) throw new NotFoundException("Trade job not found");
-    if (job.executionVenue !== "CTRADER" || !ACTIVE_JOB_STATUSES.includes(job.status))
+    if (!["CTRADER", "CBOT"].includes(job.executionVenue) || !ACTIVE_JOB_STATUSES.includes(job.status))
       throw new ConflictException(`Job cannot be closed from state ${job.status}`);
     return this.prisma.tradeJob.update({ where: { id: job.id }, data: { closeRequestedAt: new Date() } });
   }
@@ -456,7 +464,7 @@ export class TradeJobsService {
   async requestCloseAllForTelegramUser(telegramId: bigint) {
     const user = await this.prisma.user.findUnique({ where: { telegramId } });
     if (!user) throw new NotFoundException("Telegram user not found");
-    return this.prisma.tradeJob.updateMany({ where: { userId: user.id, executionVenue: "CTRADER",
+    return this.prisma.tradeJob.updateMany({ where: { userId: user.id, executionVenue: { in: ["CTRADER", "CBOT"] },
       status: { in: ACTIVE_JOB_STATUSES } }, data: { closeRequestedAt: new Date() } });
   }
 

@@ -50,6 +50,7 @@ export class UsersService {
         settings: true,
         agents: { orderBy: { createdAt: "desc" } },
         accounts: { orderBy: { createdAt: "desc" } },
+        cbotInstances: { where: { status: { not: "REVOKED" } }, orderBy: { createdAt: "desc" } },
       },
     });
   }

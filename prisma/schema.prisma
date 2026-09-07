@@ -91,6 +91,7 @@ enum RiskMode {
 enum ExecutionVenue {
   MT5
   CTRADER
+  CBOT
 }
 
 enum MockExecutionOutcome {
@@ -316,6 +317,7 @@ model CbotInstance {
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
   user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tradeJobs           TradeJob[]
 
   @@unique([broker, accountNumber, environment])
   @@index([userId, status])
@@ -624,6 +626,7 @@ model TradeJob {
   userId             String          @db.Uuid
   accountId          String?         @db.Uuid
   cTraderAccountId   String?         @db.Uuid
+  cbotInstanceId     String?         @db.Uuid
   executionVenue     ExecutionVenue  @default(MT5)
   economicEventId    String?         @db.Uuid
   idempotencyKey     String          @unique
@@ -680,12 +683,14 @@ model TradeJob {
   user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   account            TradingAccount? @relation(fields: [accountId], references: [id], onDelete: Restrict)
   cTraderAccount     CTraderAccount? @relation(fields: [cTraderAccountId], references: [id], onDelete: Restrict)
+  cbotInstance       CbotInstance?   @relation(fields: [cbotInstanceId], references: [id], onDelete: Restrict)
   economicEvent      EconomicEvent?  @relation(fields: [economicEventId], references: [id], onDelete: SetNull)
   executionReports   ExecutionReport[]
   legs               TradeJobLeg[]
 
   @@index([accountId, status, executeAt])
   @@index([cTraderAccountId, status, executeAt])
+  @@index([cbotInstanceId, status, executeAt])
   @@index([userId, createdAt])
   @@index([executionVenue, status, leaseExpiresAt])
 }

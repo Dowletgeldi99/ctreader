@@ -23,6 +23,8 @@ Implemented:
 - system-wide real-trading kill switch, disabled by default.
 - cTrader Open API OAuth connection without collecting broker passwords;
 - encrypted cTrader access/refresh tokens and automatic demo/live account discovery.
+- cBot SaaS transport with one-time Telegram pairing, local scheduling, MARKET,
+  OCO, MULTI and NEWS_REVERSAL execution, idempotent labels and execution reports.
 
 Not yet production-ready:
 
@@ -30,7 +32,7 @@ Not yet production-ready:
 - position time-stop and post-fill management;
 - metrics, alerting, rate limiting and a full operator console;
 - broker-by-broker demo certification.
-- cTrader order execution and OCO lifecycle (account connection is implemented first).
+- automatic subscription payment webhook.
 
 ## Requirements
 
@@ -105,6 +107,21 @@ After the agent synchronizes the calendar, `/news` displays upcoming high-import
 All three real-trading switches must eventually be enabled explicitly. A successful `OrderSend` request still needs confirmation through its retcode and trade transaction.
 
 The estimated monetary risk cap is optional per user and defaults to `OFF`. It can be toggled in Telegram `/settings`. Broker margin preflight, the per-user position limit, duplicate-execution protection and the global emergency stop remain mandatory even when the estimated risk cap is disabled.
+
+## cBot SaaS connection
+
+When a broker blocks Open API trading, use the included cBot connector. The
+backend remains centralized on Linux; only the small connector runs inside the
+user's cTrader account (including cTrader Cloud).
+
+1. Deploy the backend and apply Prisma migrations.
+2. Compile `ctrader/cbots/TradeTmConnector/TradeTmConnector.cs` in cTrader Algo.
+3. Get a one-time code with `/connect_cbot`.
+4. Start the cBot on the account's XAUUSD chart with the production backend URL,
+   code and expected account number.
+5. Verify `/status`, then create `/test` and select the `cBot` account.
+
+See [the cBot setup guide](ctrader/cbots/TradeTmConnector/README_RU.md).
 
 ## Development checks
 

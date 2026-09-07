@@ -37,6 +37,7 @@ export enum RiskModeDto {
 export enum ExecutionVenueDto {
   MT5 = "MT5",
   CTRADER = "CTRADER",
+  CBOT = "CBOT",
 }
 
 export class CreateTradeJobDto {

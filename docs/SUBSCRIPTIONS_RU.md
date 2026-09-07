@@ -73,7 +73,7 @@ curl -X POST -H 'content-type: application/json' \
 1. Пользователь получает код командой `/connect_cbot`.
 2. cBot один раз вызывает `POST /api/v1/cbot/pairing/claim`.
 3. Backend возвращает секретный bearer token только один раз.
-4. cBot хранит token локально и использует его для heartbeat и entitlements.
+4. cBot хранит token локально и использует его для heartbeat, заданий и отчётов.
 
 Пример claim payload:
 
@@ -94,6 +94,8 @@ curl -X POST -H 'content-type: application/json' \
 ```text
 POST /api/v1/cbot/heartbeat
 GET  /api/v1/cbot/entitlements
+GET  /api/v1/cbot/jobs?horizonMinutes=1440
+POST /api/v1/cbot/jobs/:jobId/reports
 Authorization: Bearer CBOT_TOKEN
 ```
 
@@ -101,9 +103,18 @@ Authorization: Bearer CBOT_TOKEN
 подписки запрещает новые входы, но не должно прекращать сопровождение уже
 открытых позиций.
 
-## Текущая граница версии
+## Исполнение через cBot
 
-В этой версии готовы управление подписками, enforcement и безопасная
-идентификация cBot. Автоматический платёжный webhook и передача торговых jobs в
-cBot будут следующим этапом. До реализации job transport существующий cTrader
-Open API/MT5 execution продолжает работать как раньше.
+Готовый исходник находится в
+`ctrader/cbots/TradeTmConnector/TradeTmConnector.cs`. Он поддерживает MARKET,
+STRADDLE OCO, независимый MULTI и NEWS_REVERSAL, получает задания заранее и
+исполняет их по локальному UTC-таймеру. Label каждого ордера детерминирован по
+job ID, поэтому после перезапуска уже существующие позиции и pending orders не
+дублируются. SL/TP и срок pending размещаются у брокера.
+
+Для NEWS_REVERSAL после первого initial fill противоположная initial-корзина
+отменяется, а единственная reversal-корзина ставится за SL с заданным gap.
+Достижение TP1/TP2 больше не переносит reversal orders.
+
+Автоматический платёжный webhook пока не входит в версию; подписку активирует
+администратор через Telegram или Admin API.
