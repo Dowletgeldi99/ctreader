@@ -24,7 +24,7 @@ Production Docker build компилирует `TradeTmConnector.csproj` офи�
 его в runtime image. Файл доступен по стабильному адресу:
 
 ```text
-https://api.tradetm.club/api/v1/cbot/download
+https://bot.tradetm.club/api/v1/cbot/download
 ```
 
 Если `CBOT_INSTALL_URL` пуст, Telegram автоматически строит адрес как

@@ -60,12 +60,12 @@ TELEGRAM_ADMIN_IDS=123456789
 
 ```bash
 curl -H 'x-admin-api-key: ADMIN_KEY' \
-  https://api.tradetm.club/api/v1/admin/subscriptions/users
+  https://bot.tradetm.club/api/v1/admin/subscriptions/users
 
 curl -X POST -H 'content-type: application/json' \
   -H 'x-admin-api-key: ADMIN_KEY' \
   -d '{"telegramId":"123456789","plan":"PRO","days":30}' \
-  https://api.tradetm.club/api/v1/admin/subscriptions/grant
+  https://bot.tradetm.club/api/v1/admin/subscriptions/grant
 ```
 
 ## cBot pairing API

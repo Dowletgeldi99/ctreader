@@ -12,7 +12,7 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
     public class TradeTmConnector : Robot
     {
-        [Parameter("Backend URL", DefaultValue = "https://api.tradetm.club")]
+        [Parameter("Backend URL", DefaultValue = "https://bot.tradetm.club")]
         public string BackendUrl { get; set; }
 
         [Parameter("Pairing code", DefaultValue = "")]
