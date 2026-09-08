@@ -17,6 +17,10 @@ Backend URL и безопасные defaults уже находятся внут�
 редактор кода, собственный VPS и ручной Build клиенту не нужны. Cloud instance
 работает независимо от телефона.
 
+Cloud connector использует только `wss://bot.tradetm.club:25345/api/v1/cbot/ws`.
+cTrader Cloud не отправляет HTTP-запросы из cBot, поэтому HTTP остаётся только
+для скачивания `.algo`. На VPS должен быть открыт TCP `25345`.
+
 ## Автоматический выпуск для оператора
 
 Production Docker build компилирует `TradeTmConnector.csproj` официальным

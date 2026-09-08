@@ -27,6 +27,14 @@ export class CbotService {
     return { code, expiresAt };
   }
 
+  async authenticateToken(token: string) {
+    if (!token || token.length > 256) throw new BadRequestException("Invalid cBot token");
+    const tokenHash = hashSecret(token, this.pepper);
+    const instance = await this.prisma.cbotInstance.findUnique({ where: { tokenHash } });
+    if (!instance || instance.status === "REVOKED") throw new BadRequestException("Invalid or revoked cBot token");
+    return instance;
+  }
+
   async claim(dto: ClaimCbotPairingDto, ip?: string) {
     const pairing = await this.prisma.cbotPairingCode.findUnique({
       where: { codeHash: hashSecret(dto.code.toUpperCase(), this.pepper) },

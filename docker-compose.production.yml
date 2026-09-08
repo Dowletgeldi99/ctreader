@@ -95,6 +95,7 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+      - "25345:25345"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ${UI_DIST_PATH:-/opt/ui/dist}:/srv/ui:ro

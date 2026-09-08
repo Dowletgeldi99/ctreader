@@ -44,3 +44,18 @@
 		format json
 	}
 }
+
+https://{$DOMAIN}:25345 {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	reverse_proxy app:3000
+
+	log {
+		output stdout
+		format json
+	}
+}

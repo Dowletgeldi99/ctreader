@@ -28,6 +28,7 @@ sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 sudo ufw allow 443/udp
+sudo ufw allow 25345/tcp
 sudo ufw enable
 ```
 

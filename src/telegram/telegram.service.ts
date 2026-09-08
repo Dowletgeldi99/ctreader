@@ -81,7 +81,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.webhookSecret = config.get<string>("TELEGRAM_WEBHOOK_SECRET");
     const configuredCbotUrl = config.get<string>("CBOT_INSTALL_URL");
     this.cbotInstallUrl = configuredCbotUrl || (this.publicBaseUrl
-      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download`
+      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.1.0`
       : undefined);
     this.adminTelegramIds = new Set((config.get<string>("TELEGRAM_ADMIN_IDS") ?? "")
       .split(",").map((value) => value.trim()).filter(Boolean));

@@ -12,8 +12,8 @@ namespace cAlgo.Robots
     [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
     public class TradeTmConnector : Robot
     {
-        [Parameter("Backend URL", DefaultValue = "https://bot.tradetm.club")]
-        public string BackendUrl { get; set; }
+        [Parameter("WebSocket URL", DefaultValue = "wss://bot.tradetm.club:25345/api/v1/cbot/ws")]
+        public string WebSocketUrl { get; set; }
 
         [Parameter("Pairing code", DefaultValue = "")]
         public string PairingCode { get; set; }
@@ -24,11 +24,8 @@ namespace cAlgo.Robots
         [Parameter("Allow LIVE trading", DefaultValue = false)]
         public bool AllowLiveTrading { get; set; }
 
-        [Parameter("Poll interval ms", DefaultValue = 500, MinValue = 250, MaxValue = 5000)]
+        [Parameter("Poll interval ms", DefaultValue = 2000, MinValue = 500, MaxValue = 10000)]
         public int PollIntervalMs { get; set; }
-
-        [Parameter("API timeout sec", DefaultValue = 5, MinValue = 1, MaxValue = 30)]
-        public int ApiTimeoutSeconds { get; set; }
 
         [Parameter("Max managed exposure", DefaultValue = 20, MinValue = 1, MaxValue = 100)]
         public int MaxManagedExposure { get; set; }
@@ -38,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.0.0";
+        private const string Version = "1.1.0";
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -56,13 +53,19 @@ namespace cAlgo.Robots
         private long _reportSequence;
         private bool _busy;
         private bool _acceptNewJobs = true;
+        private WebSocketClient _webSocket;
+        private bool _connected;
+        private DateTime _lastConnectAttempt = DateTime.MinValue;
+        private DateTime _lastPairAttempt = DateTime.MinValue;
+        private long _requestSequence;
+        private bool _pollInFlight;
+        private bool _heartbeatInFlight;
 
         protected override void OnStart()
         {
-            BackendUrl = (BackendUrl ?? "").Trim().TrimEnd('/');
-            if (!BackendUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
-                !BackendUrl.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Backend URL must use HTTPS (localhost is allowed for development)");
+            WebSocketUrl = (WebSocketUrl ?? "").Trim();
+            if (!WebSocketUrl.StartsWith("wss://", StringComparison.OrdinalIgnoreCase) || !WebSocketUrl.Contains(":25345"))
+                throw new InvalidOperationException("Cloud WebSocket URL must use wss:// and port 25345");
             if (!string.IsNullOrWhiteSpace(ExpectedAccount) && ExpectedAccount.Trim() != Account.Number.ToString(CultureInfo.InvariantCulture))
                 throw new InvalidOperationException("Wrong account. Expected " + ExpectedAccount + ", active " + Account.Number);
             if (Account.IsLive && !AllowLiveTrading)
@@ -79,24 +82,46 @@ namespace cAlgo.Robots
 
             PendingOrders.Filled += OnPendingFilled;
             Positions.Closed += OnPositionClosed;
-
-            if (string.IsNullOrWhiteSpace(_token)) Pair();
-            else Heartbeat();
-
+            _webSocket = new WebSocketClient();
+            _webSocket.Connected += args =>
+            {
+                _connected = true;
+                Print("TradeTm WebSocket connected");
+                if (string.IsNullOrWhiteSpace(_token)) Pair(); else { Heartbeat(); Poll(); }
+            };
+            _webSocket.Disconnected += args =>
+            {
+                _connected = false; _pollInFlight = false; _heartbeatInFlight = false;
+                Print("TradeTm WebSocket disconnected");
+            };
+            _webSocket.TextReceived += OnWebSocketText;
+            ConnectSocket();
             Timer.Start(TimeSpan.FromMilliseconds(Math.Max(250, PollIntervalMs)));
             Print("TradeTm connector {0}: {1} {2}, symbol {3}", Version, Account.BrokerName, Account.Number, SymbolName);
         }
 
         protected override void OnTimer()
         {
-            if (_busy || string.IsNullOrWhiteSpace(_token)) return;
+            if (_busy) return;
             _busy = true;
             try
             {
                 var now = DateTime.UtcNow;
+                if (!_connected)
+                {
+                    if ((now - _lastConnectAttempt).TotalSeconds >= 5) ConnectSocket();
+                    return;
+                }
+                if (string.IsNullOrWhiteSpace(_token))
+                {
+                    if ((now - _lastPairAttempt).TotalSeconds >= 5) Pair();
+                    return;
+                }
                 FlushReportOutbox();
-                if ((now - _lastHeartbeat).TotalSeconds >= 20) Heartbeat();
-                if ((now - _lastPoll).TotalMilliseconds >= PollIntervalMs) Poll();
+                if (_heartbeatInFlight && (now - _lastHeartbeat).TotalSeconds >= 10) _heartbeatInFlight = false;
+                if (_pollInFlight && (now - _lastPoll).TotalSeconds >= 10) _pollInFlight = false;
+                if (!_heartbeatInFlight && (now - _lastHeartbeat).TotalSeconds >= 20) Heartbeat();
+                if (!_pollInFlight && (now - _lastPoll).TotalMilliseconds >= PollIntervalMs) Poll();
                 ProcessJobs(now);
             }
             catch (Exception ex) { Print("TradeTm timer error: {0}", ex.Message); }
@@ -104,6 +129,22 @@ namespace cAlgo.Robots
         }
 
         protected override void OnException(Exception exception) { Print("TradeTm exception: {0}", exception); }
+
+        protected override void OnStop()
+        {
+            if (_webSocket != null)
+            {
+                try { _webSocket.Close(WebSocketClientCloseStatus.NormalClosure, "cBot stopped"); } catch { }
+                _webSocket.Dispose();
+            }
+        }
+
+        private void ConnectSocket()
+        {
+            _lastConnectAttempt = DateTime.UtcNow;
+            try { _webSocket.Connect(new Uri(WebSocketUrl)); }
+            catch (Exception ex) { _connected = false; Print("WebSocket connect failed: {0}", ex.Message); }
+        }
 
         private void Pair()
         {
@@ -116,17 +157,14 @@ namespace cAlgo.Robots
                 Broker = Account.BrokerName, Environment = Account.IsLive ? "LIVE" : "DEMO",
                 Symbol = SymbolName, Version = Version
             };
-            var response = Send<PairResponse>("/api/v1/cbot/pairing/claim", "POST", body, false);
-            _token = response.Token;
-            _instanceId = response.InstanceId;
-            LocalStorage.SetString(TokenKey, _token);
-            LocalStorage.Flush(LocalStorageScope.Instance);
-            Print("cBot paired. Instance: {0}", _instanceId);
+            _lastPairAttempt = DateTime.UtcNow;
+            SendWs("PAIR", body, false);
         }
 
         private void Heartbeat()
         {
-            var response = Send<HeartbeatResponse>("/api/v1/cbot/heartbeat", "POST", new
+            _heartbeatInFlight = true;
+            SendWs("HEARTBEAT", new
             {
                 accountNumber = Account.Number.ToString(CultureInfo.InvariantCulture),
                 broker = Account.BrokerName,
@@ -134,14 +172,18 @@ namespace cAlgo.Robots
                 symbol = SymbolName,
                 version = Version
             }, true);
-            _instanceId = response.Id;
             _lastHeartbeat = DateTime.UtcNow;
         }
 
         private void Poll()
         {
-            var response = Send<PollResponse>("/api/v1/cbot/jobs?horizonMinutes=1440", "GET", null, true);
+            _pollInFlight = true;
+            SendWs("POLL", new { horizonMinutes = 1440 }, true);
             _lastPoll = DateTime.UtcNow;
+        }
+
+        private void ApplyPoll(PollResponse response)
+        {
             _acceptNewJobs = response.AcceptNewJobs;
             foreach (var dto in response.Jobs ?? Array.Empty<JobDto>())
             {
@@ -153,6 +195,40 @@ namespace cAlgo.Robots
                 }
                 else runtime.Update(dto);
             }
+        }
+
+        private void OnWebSocketText(WebSocketClientTextReceivedEventArgs args)
+        {
+            try
+            {
+                var response = JsonSerializer.Deserialize<WsResponse>(args.Text, _json);
+                if (response == null) return;
+                if (!response.Ok)
+                {
+                    Print("WebSocket request {0} rejected: {1} (status {2})", response.Id, response.Error, response.Status);
+                    return;
+                }
+                if (response.Id != null && response.Id.StartsWith("PAIR-", StringComparison.Ordinal))
+                {
+                    var pair = response.Payload.Deserialize<PairResponse>(_json);
+                    _token = pair.Token; _instanceId = pair.InstanceId;
+                    LocalStorage.SetString(TokenKey, _token); LocalStorage.Flush(LocalStorageScope.Instance);
+                    Print("cBot paired. Instance: {0}", _instanceId);
+                    Heartbeat(); Poll();
+                }
+                else if (response.Id != null && response.Id.StartsWith("HEARTBEAT-", StringComparison.Ordinal))
+                {
+                    _heartbeatInFlight = false;
+                    var heartbeat = response.Payload.Deserialize<HeartbeatResponse>(_json);
+                    _instanceId = heartbeat.Id;
+                }
+                else if (response.Id != null && response.Id.StartsWith("POLL-", StringComparison.Ordinal))
+                {
+                    _pollInFlight = false;
+                    ApplyPoll(response.Payload.Deserialize<PollResponse>(_json));
+                }
+            }
+            catch (Exception ex) { Print("Invalid WebSocket response: {0}", ex.Message); }
         }
 
         private void ProcessJobs(DateTime now)
@@ -487,11 +563,10 @@ namespace cAlgo.Robots
                     FilledVolume = volumeUnits.HasValue ? Symbol.VolumeInUnitsToQuantity(volumeUnits.Value) : (double?)null,
                     SpreadPoints = SpreadPoints()
                 };
-                var path = "/api/v1/cbot/jobs/" + runtime.Job.Id + "/reports";
-                try { Send<ReportResponse>(path, "POST", report, true); }
+                try { SendWs("REPORT", new { jobId = runtime.Job.Id, report = report }, true); }
                 catch
                 {
-                    if (_reportOutbox.Count < 500) _reportOutbox.Enqueue(new PendingReport { Path = path, Body = report });
+                    if (_reportOutbox.Count < 500) _reportOutbox.Enqueue(new PendingReport { JobId = runtime.Job.Id, Body = report });
                     throw;
                 }
             }
@@ -506,32 +581,23 @@ namespace cAlgo.Robots
                 var pending = _reportOutbox.Peek();
                 try
                 {
-                    Send<ReportResponse>(pending.Path, "POST", pending.Body, true);
+                    SendWs("REPORT", new { jobId = pending.JobId, report = pending.Body }, true);
                     _reportOutbox.Dequeue();
                 }
                 catch { break; }
             }
         }
 
-        private T Send<T>(string path, string method, object body, bool authenticated)
+        private void SendWs(string type, object payload, bool authenticated)
         {
-            var request = new HttpRequest(new Uri(BackendUrl + path));
-            request.Method = method == "POST" ? HttpMethod.Post : HttpMethod.Get;
-            request.Timeout = TimeSpan.FromSeconds(ApiTimeoutSeconds);
-            request.Headers.Add("Accept", "application/json");
-            if (authenticated)
+            if (!_connected || _webSocket == null) throw new InvalidOperationException("WebSocket is not connected");
+            if (authenticated && string.IsNullOrWhiteSpace(_token)) throw new InvalidOperationException("cBot is not paired");
+            var request = new WsRequest
             {
-                if (string.IsNullOrWhiteSpace(_token)) throw new InvalidOperationException("cBot is not paired");
-                request.Headers.Add("Authorization", "Bearer " + _token);
-            }
-            if (body != null)
-            {
-                request.Headers.Add("Content-Type", "application/json");
-                request.Body = JsonSerializer.Serialize(body, _json);
-            }
-            var response = Http.Send(request);
-            if (!response.IsSuccessful) throw new InvalidOperationException("HTTP " + response.StatusCode + ": " + response.Body);
-            return JsonSerializer.Deserialize<T>(response.Body, _json);
+                Id = type + "-" + DateTime.UtcNow.Ticks + "-" + (++_requestSequence), Type = type,
+                Token = authenticated ? _token : null, Payload = payload
+            };
+            _webSocket.Send(JsonSerializer.Serialize(request, _json));
         }
 
         private static DateTime ParseUtc(string value)
@@ -566,8 +632,9 @@ namespace cAlgo.Robots
         private sealed class PairResponse { public string InstanceId { get; set; } public string Token { get; set; } }
         private sealed class HeartbeatResponse { public string Id { get; set; } }
         private sealed class PollResponse { public bool AcceptNewJobs { get; set; } public bool TradingHalted { get; set; } public JobDto[] Jobs { get; set; } }
-        private sealed class ReportResponse { public bool Accepted { get; set; } }
-        private sealed class PendingReport { public string Path { get; set; } public ReportRequest Body { get; set; } }
+        private sealed class WsRequest { public string Id { get; set; } public string Type { get; set; } public string Token { get; set; } public object Payload { get; set; } }
+        private sealed class WsResponse { public string Id { get; set; } public bool Ok { get; set; } public JsonElement Payload { get; set; } public string Error { get; set; } public int? Status { get; set; } }
+        private sealed class PendingReport { public string JobId { get; set; } public ReportRequest Body { get; set; } }
         private sealed class ReportRequest
         {
             public string ReportKey { get; set; }
