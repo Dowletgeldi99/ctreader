@@ -390,7 +390,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       if (!user) return;
       const session = await this.sessions.get(user.id);
       const executionVenue = ctx.match[1] as ExecutionVenueDto;
-      const cTraderAccounts = await this.cTrader.listUserAccounts(user.id);
+      const cTraderAccounts = executionVenue === ExecutionVenueDto.CTRADER
+        ? await this.cTrader.listUserAccounts(user.id)
+        : [];
       const account = executionVenue === ExecutionVenueDto.MT5
         ? user.accounts.find((item) => item.id === ctx.match[2])
         : executionVenue === ExecutionVenueDto.CTRADER
