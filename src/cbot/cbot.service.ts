@@ -107,6 +107,19 @@ export class CbotService {
       throw new BadRequestException("horizonMinutes must be between 1 and 1440");
     const access = await this.entitlement(userId);
     const now = new Date();
+    const abandonedBefore = new Date(now.getTime() - 60_000);
+    // A Cloud cBot can disconnect or reject a payload before reporting anything.
+    // Expire delivery-stage jobs server-side so they cannot remain SYNCED forever
+    // and block the user's next job.
+    await this.prisma.tradeJob.updateMany({
+      where: {
+        cbotInstanceId: instanceId,
+        executionVenue: "CBOT",
+        status: { in: ["SCHEDULED", "SYNCED", "ARMED"] },
+        expiresAt: { lte: abandonedBefore },
+      },
+      data: { status: "MISSED" },
+    });
     const statuses: TradeJobStatus[] = access.acceptNewJobs
       ? ["SCHEDULED", "SYNCED", "ARMED", "SUBMITTED", "PARTIALLY_FILLED", "FILLED", "MANAGED"]
       : ["ARMED", "SUBMITTED", "PARTIALLY_FILLED", "FILLED", "MANAGED"];
@@ -128,11 +141,16 @@ export class CbotService {
         takeProfitPoints: job.takeProfitPoints, entryDistancePoints: job.entryDistancePoints,
         deviationPoints: job.deviationPoints, maxSpreadPoints: job.maxSpreadPoints,
         armSeconds: job.armSeconds, maxLatenessMs: job.maxLatenessMs,
-        pendingExpirySeconds: job.pendingExpirySeconds, multiTradesPerSide: job.multiTradesPerSide,
-        multiNextStepPoints: job.multiNextStepPoints, multiNextSlPoints: job.multiNextSlPoints,
-        multiNextTpPoints: job.multiNextTpPoints, volumeAllocationMode: job.volumeAllocationMode,
-        takeProfit2Points: job.takeProfit2Points, takeProfit3Points: job.takeProfit3Points,
-        reversalGapPoints: job.reversalGapPoints, maxReversals: job.maxReversals,
+        pendingExpirySeconds: job.pendingExpirySeconds,
+        multiTradesPerSide: job.multiTradesPerSide ?? undefined,
+        multiNextStepPoints: job.multiNextStepPoints ?? undefined,
+        multiNextSlPoints: job.multiNextSlPoints ?? undefined,
+        multiNextTpPoints: job.multiNextTpPoints ?? undefined,
+        volumeAllocationMode: job.volumeAllocationMode ?? undefined,
+        takeProfit2Points: job.takeProfit2Points ?? undefined,
+        takeProfit3Points: job.takeProfit3Points ?? undefined,
+        reversalGapPoints: job.reversalGapPoints ?? undefined,
+        maxReversals: job.maxReversals ?? undefined,
         executeAt: job.executeAt.toISOString(), expiresAt: job.expiresAt.toISOString(),
         managementExpiresAt: job.managementExpiresAt?.toISOString(),
         cancelRequested: Boolean(job.cancelRequestedAt), closeRequested: Boolean(job.closeRequestedAt),

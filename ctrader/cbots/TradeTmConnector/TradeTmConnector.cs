@@ -35,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.1.0";
+        private const string Version = "1.1.1";
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -392,12 +392,12 @@ namespace cAlgo.Robots
         private void PlaceMulti(JobRuntime runtime, List<TradeResult> results)
         {
             var j = runtime.Job;
-            var count = Math.Max(2, j.MultiTradesPerSide);
+            var count = Math.Max(2, j.MultiTradesPerSide ?? 2);
             for (var i = 1; i <= count; i++)
             {
-                var entry = j.EntryDistancePoints + (i - 1) * j.MultiNextStepPoints;
-                var sl = i == 1 ? j.StopLossPoints : j.MultiNextSlPoints;
-                var tp = j.TakeProfitPoints + (i - 1) * j.MultiNextTpPoints;
+                var entry = j.EntryDistancePoints + (i - 1) * (j.MultiNextStepPoints ?? 0);
+                var sl = i == 1 ? j.StopLossPoints : (j.MultiNextSlPoints ?? j.StopLossPoints);
+                var tp = j.TakeProfitPoints + (i - 1) * (j.MultiNextTpPoints ?? 0);
                 results.Add(PlaceStop(runtime, TradeType.Buy, i, entry, sl, tp, "I"));
                 results.Add(PlaceStop(runtime, TradeType.Sell, i, entry, sl, tp, "I"));
             }
@@ -408,7 +408,8 @@ namespace cAlgo.Robots
             var j = runtime.Job;
             for (var i = 1; i <= 3; i++)
             {
-                var tp = i == 1 ? j.TakeProfitPoints : i == 2 ? j.TakeProfit2Points : j.TakeProfit3Points;
+                var tp = i == 1 ? j.TakeProfitPoints : i == 2
+                    ? (j.TakeProfit2Points ?? j.TakeProfitPoints) : (j.TakeProfit3Points ?? j.TakeProfitPoints);
                 results.Add(PlaceStop(runtime, TradeType.Buy, i, j.EntryDistancePoints, j.StopLossPoints, tp, "I"));
                 results.Add(PlaceStop(runtime, TradeType.Sell, i, j.EntryDistancePoints, j.StopLossPoints, tp, "I"));
             }
@@ -452,11 +453,12 @@ namespace cAlgo.Robots
                 Report(runtime, "ERROR", "Cannot place reversal: trigger position has no broker SL");
                 return;
             }
-            var offset = j.ReversalGapPoints * Symbol.TickSize;
+            var offset = (j.ReversalGapPoints ?? 0) * Symbol.TickSize;
             var target = Math.Round(opposite == TradeType.Sell ? triggerSl.Value - offset : triggerSl.Value + offset, Symbol.Digits);
             for (var i = 1; i <= 3; i++)
             {
-                var tp = i == 1 ? j.TakeProfitPoints : i == 2 ? j.TakeProfit2Points : j.TakeProfit3Points;
+                var tp = i == 1 ? j.TakeProfitPoints : i == 2
+                    ? (j.TakeProfit2Points ?? j.TakeProfitPoints) : (j.TakeProfit3Points ?? j.TakeProfitPoints);
                 var result = PlaceStopOrder(opposite, SymbolName, VolumeInUnits(LotForOrder(j)), target,
                     Label(runtime, "R", opposite, i), PointsToPips(j.StopLossPoints), PointsToPips(tp),
                     ProtectionType.Relative,
@@ -536,7 +538,7 @@ namespace cAlgo.Robots
         {
             if (j.ExecutionMode == "MARKET") return 1;
             if (j.ExecutionMode == "STRADDLE") return 2;
-            if (j.ExecutionMode == "MULTI") return Math.Max(2, j.MultiTradesPerSide) * 2;
+            if (j.ExecutionMode == "MULTI") return Math.Max(2, j.MultiTradesPerSide ?? 2) * 2;
             if (j.ExecutionMode == "NEWS_REVERSAL") return 6;
             return 0;
         }
@@ -663,14 +665,14 @@ namespace cAlgo.Robots
             public int ArmSeconds { get; set; }
             public int MaxLatenessMs { get; set; }
             public int PendingExpirySeconds { get; set; }
-            public int MultiTradesPerSide { get; set; }
-            public int MultiNextStepPoints { get; set; }
-            public int MultiNextSlPoints { get; set; }
-            public int MultiNextTpPoints { get; set; }
+            public int? MultiTradesPerSide { get; set; }
+            public int? MultiNextStepPoints { get; set; }
+            public int? MultiNextSlPoints { get; set; }
+            public int? MultiNextTpPoints { get; set; }
             public string VolumeAllocationMode { get; set; }
-            public int TakeProfit2Points { get; set; }
-            public int TakeProfit3Points { get; set; }
-            public int ReversalGapPoints { get; set; }
+            public int? TakeProfit2Points { get; set; }
+            public int? TakeProfit3Points { get; set; }
+            public int? ReversalGapPoints { get; set; }
             public int MaxReversals { get; set; }
             public string ExecuteAt { get; set; }
             public string ExpiresAt { get; set; }

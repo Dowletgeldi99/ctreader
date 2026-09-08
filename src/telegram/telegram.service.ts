@@ -81,7 +81,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.webhookSecret = config.get<string>("TELEGRAM_WEBHOOK_SECRET");
     const configuredCbotUrl = config.get<string>("CBOT_INSTALL_URL");
     this.cbotInstallUrl = configuredCbotUrl || (this.publicBaseUrl
-      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.1.0`
+      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.1.1`
       : undefined);
     this.adminTelegramIds = new Set((config.get<string>("TELEGRAM_ADMIN_IDS") ?? "")
       .split(",").map((value) => value.trim()).filter(Boolean));
@@ -853,7 +853,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       : "cTrader-счета ещё не подключены";
     const cbotStatus = user.cbotInstances.length
       ? user.cbotInstances.map((instance) =>
-          `${instance.accountNumber.toString()} @ ${instance.broker}: ${instance.environment}, ${instance.status}, last seen ${instance.lastSeenAt?.toISOString() ?? "never"}`,
+          `${instance.accountNumber.toString()} @ ${instance.broker}: ${instance.environment}, ${instance.status}, v${instance.version ?? "?"}, last seen ${instance.lastSeenAt?.toISOString() ?? "never"}`,
         ).join("\n")
       : "cBot-инстансы ещё не подключены";
     const safety = await this.safety.status();
