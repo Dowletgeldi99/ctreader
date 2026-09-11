@@ -35,7 +35,8 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.1.1";
+        private const string Version = "1.1.2";
+        private const int PendingPlacementLeadSeconds = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -275,12 +276,15 @@ namespace cAlgo.Robots
                 var executeAt = ParseUtc(job.ExecuteAt);
                 var expiresAt = ParseUtc(job.ExpiresAt);
                 var armAt = executeAt.AddSeconds(-job.ArmSeconds);
+                var submitAt = job.ExecutionMode == "MARKET"
+                    ? executeAt
+                    : executeAt.AddSeconds(-PendingPlacementLeadSeconds);
                 if (!runtime.Armed && now >= armAt)
                 {
                     runtime.Armed = true;
                     Report(runtime, "ARMED", "Local execution timer armed");
                 }
-                if (runtime.Submitted || now < (job.ExecutionMode == "MARKET" ? executeAt : armAt)) continue;
+                if (runtime.Submitted || now < submitAt) continue;
                 if (now > expiresAt || (job.ExecutionMode == "MARKET" && (now - executeAt).TotalMilliseconds > job.MaxLatenessMs))
                 {
                     Report(runtime, "MISSED", "Execution window missed");
