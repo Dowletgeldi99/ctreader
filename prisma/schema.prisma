@@ -508,7 +508,7 @@ model UserSettings {
   defaultArmSeconds     Int      @default(10)
   defaultMaxLatenessMs  Int      @default(1000)
   defaultDeviationPoints Int     @default(20)
-  defaultMaxSpreadPoints Int     @default(50)
+  defaultMaxSpreadPoints Int     @default(0)
   maxDailyLossPercent   Decimal  @default(1.00) @db.Decimal(5, 2)
   riskLimitEnabled      Boolean  @default(false)
   maxConcurrentJobs     Int      @default(1)
@@ -639,7 +639,7 @@ model TradeJob {
   stopLossPoints     Int
   takeProfitPoints   Int
   deviationPoints    Int             @default(20)
-  maxSpreadPoints    Int             @default(50)
+  maxSpreadPoints    Int             @default(0)
   armSeconds         Int             @default(10)
   maxLatenessMs      Int             @default(1000)
   entryDistancePoints Int            @default(100)

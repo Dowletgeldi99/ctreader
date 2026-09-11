@@ -99,7 +99,7 @@ export class CreateTradeJobDto {
 
   @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(0)
   @Max(1_000_000)
   maxSpreadPoints?: number;
 

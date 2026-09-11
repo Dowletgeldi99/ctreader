@@ -35,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.1.2";
+        private const string Version = "1.1.3";
         private const int PendingPlacementLeadSeconds = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
@@ -298,7 +298,7 @@ namespace cAlgo.Robots
         private void Submit(JobRuntime runtime)
         {
             var job = runtime.Job;
-            if (SpreadPoints() > job.MaxSpreadPoints)
+            if (job.MaxSpreadPoints > 0 && SpreadPoints() > job.MaxSpreadPoints)
             {
                 Report(runtime, "PREFLIGHT_REJECTED", "Spread exceeds limit: " + SpreadPoints() + " > " + job.MaxSpreadPoints);
                 runtime.Submitted = runtime.TerminalReported = true;

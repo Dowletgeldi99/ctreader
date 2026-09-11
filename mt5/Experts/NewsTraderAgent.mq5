@@ -388,7 +388,7 @@ bool Preflight(const TradeJob &job,MqlTick &tick,double &volume,string &reason)
    if(point<=0)
      { reason="Invalid symbol point size"; return false; }
    const int spread_points=(int)MathRound((tick.ask-tick.bid)/point);
-   if(spread_points>job.max_spread_points)
+   if(job.max_spread_points>0 && spread_points>job.max_spread_points)
      { reason=StringFormat("Spread %d exceeds limit %d",spread_points,job.max_spread_points); return false; }
 
    if(job.execution_mode=="STRADDLE" || job.execution_mode=="MULTI")
