@@ -35,8 +35,9 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.1.3";
+        private const string Version = "1.2.0";
         private const int PendingPlacementLeadSeconds = 3;
+        private const int MaxReversalPlacementAttempts = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true,
@@ -97,7 +98,8 @@ namespace cAlgo.Robots
             };
             _webSocket.TextReceived += OnWebSocketText;
             ConnectSocket();
-            Timer.Start(TimeSpan.FromMilliseconds(Math.Max(250, PollIntervalMs)));
+            // Keep execution timing and short broker retries independent from the slower network poll cadence.
+            Timer.Start(TimeSpan.FromMilliseconds(250));
             Print("TradeTm connector {0}: {1} {2}, symbol {3}", Version, Account.BrokerName, Account.Number, SymbolName);
         }
 
@@ -282,9 +284,10 @@ namespace cAlgo.Robots
                 if (!runtime.Armed && now >= armAt)
                 {
                     runtime.Armed = true;
-                    Report(runtime, "ARMED", "Local execution timer armed");
+                    Report(runtime, "ARMED", BuildPreflightSummary(runtime));
                 }
-                if (runtime.Submitted || now < submitAt) continue;
+                ProcessReversalRetry(runtime, now);
+                if (runtime.Submitted || now < submitAt || now < runtime.NextInitialAttemptAt) continue;
                 if (now > expiresAt || (job.ExecutionMode == "MARKET" && (now - executeAt).TotalMilliseconds > job.MaxLatenessMs))
                 {
                     Report(runtime, "MISSED", "Execution window missed");
@@ -325,8 +328,8 @@ namespace cAlgo.Robots
                 return;
             }
             var orderCount = ExpectedOrderCount(job);
-            var existingExposure = Positions.Count + PendingOrders.Count;
-            if (existingExposure + orderCount > MaxManagedExposure)
+            var existingExposure = ManagedExposureCount();
+            if (job.ExecutionMode != "NEWS_REVERSAL" && existingExposure + orderCount > MaxManagedExposure)
             {
                 Report(runtime, "PREFLIGHT_REJECTED", "Exposure limit: " + existingExposure + " existing + " + orderCount +
                     " requested exceeds " + MaxManagedExposure);
@@ -335,7 +338,8 @@ namespace cAlgo.Robots
             }
             var estimatedMargin = Math.Max(Symbol.GetEstimatedMargin(TradeType.Buy, perOrderVolume),
                 Symbol.GetEstimatedMargin(TradeType.Sell, perOrderVolume)) * orderCount;
-            if (estimatedMargin * (1.0 + MarginBufferPercent / 100.0) > Account.FreeMargin)
+            if (job.ExecutionMode != "NEWS_REVERSAL" &&
+                estimatedMargin * (1.0 + MarginBufferPercent / 100.0) > Account.FreeMargin)
             {
                 Report(runtime, "PREFLIGHT_REJECTED", "Estimated margin " + estimatedMargin.ToString("F2") +
                     " plus buffer exceeds free margin " + Account.FreeMargin.ToString("F2"));
@@ -350,6 +354,7 @@ namespace cAlgo.Robots
             }
 
             runtime.Submitted = true;
+            runtime.InitialAttempts++;
             runtime.AnchorAsk = Symbol.Ask;
             runtime.AnchorBid = Symbol.Bid;
             var results = new List<TradeResult>();
@@ -360,7 +365,12 @@ namespace cAlgo.Robots
                 results.Add(PlaceStop(runtime, TradeType.Sell, 1, job.EntryDistancePoints, job.StopLossPoints, job.TakeProfitPoints, "O"));
             }
             else if (job.ExecutionMode == "MULTI") PlaceMulti(runtime, results);
-            else if (job.ExecutionMode == "NEWS_REVERSAL") PlaceInitialReversalBasket(runtime, results);
+            else if (job.ExecutionMode == "NEWS_REVERSAL")
+            {
+                runtime.InitialBasketPlacementInProgress = true;
+                try { PlaceInitialReversalBasket(runtime, results); }
+                finally { runtime.InitialBasketPlacementInProgress = false; }
+            }
             else
             {
                 Report(runtime, "REJECTED", "Unsupported execution mode " + job.ExecutionMode);
@@ -371,14 +381,27 @@ namespace cAlgo.Robots
             var accepted = results.Count(x => x != null && x.IsSuccessful);
             if (accepted != results.Count)
             {
-                CancelWhere(runtime, o => true);
+                RollbackLeg(runtime, null);
                 var error = results.FirstOrDefault(x => x != null && !x.IsSuccessful);
+                var errorText = error == null ? "No order result" : error.Error.ToString();
+                runtime.DeferredReversalTriggerStopLoss = null;
+                if (job.ExecutionMode == "NEWS_REVERSAL" && runtime.InitialAttempts < 3 &&
+                    !IsPermanentBrokerError(errorText) && DateTime.UtcNow < ParseUtc(job.ExecuteAt))
+                {
+                    runtime.Submitted = false;
+                    runtime.NextInitialAttemptAt = DateTime.UtcNow.AddMilliseconds(300);
+                    Report(runtime, "ERROR", "Initial basket attempt " + runtime.InitialAttempts +
+                        " incomplete (" + accepted + "/" + results.Count + "); retry armed. " + errorText);
+                    return;
+                }
                 Report(runtime, "REJECTED", "Atomic basket rejected (" + accepted + "/" + results.Count + "). " +
-                    (error == null ? "No order result" : error.Error.ToString()));
+                    errorText);
                 runtime.TerminalReported = true;
                 return;
             }
             Report(runtime, "SUBMITTED", accepted + "/" + results.Count + " orders accepted");
+            if (job.ExecutionMode == "NEWS_REVERSAL" && runtime.DeferredReversalTriggerStopLoss.HasValue)
+                BeginReversal(runtime, runtime.DeferredReversalTriggerType, runtime.DeferredReversalTriggerStopLoss);
             if (job.ExecutionMode == "MARKET" && results[0].Position != null)
                 Report(runtime, "FILLED", "Market position opened", null, results[0].Position.Id.ToString(),
                     results[0].Position.EntryPrice, results[0].Position.VolumeInUnits);
@@ -440,37 +463,109 @@ namespace cAlgo.Robots
                 CancelWhere(runtime, o => o.TradeType != args.Position.TradeType);
             else if (j.ExecutionMode == "NEWS_REVERSAL" && args.PendingOrder.Label.Contains(":I:") && !runtime.ReversalPlaced)
             {
-                runtime.ReversalPlaced = true;
-                CancelWhere(runtime, o => o.Label.Contains(":I:") && o.TradeType != args.Position.TradeType);
-                PlaceReversal(runtime, args.Position);
+                runtime.DeferredReversalTriggerType = args.Position.TradeType;
+                runtime.DeferredReversalTriggerStopLoss = args.Position.StopLoss;
+                if (!runtime.InitialBasketPlacementInProgress)
+                    BeginReversal(runtime, args.Position.TradeType, args.Position.StopLoss);
             }
         }
 
-        private void PlaceReversal(JobRuntime runtime, Position trigger)
+        private void BeginReversal(JobRuntime runtime, TradeType triggerType, double? triggerStopLoss)
+        {
+            if (runtime.ReversalPlaced || runtime.ReversalFailed ||
+                (runtime.ReversalAttempts > 0 && DateTime.UtcNow < runtime.NextReversalAttemptAt)) return;
+            CancelWhere(runtime, o => o.Label.Contains(":I:") && o.TradeType != triggerType);
+            if (!runtime.ReversalPlacementInProgress)
+                TryPlaceReversal(runtime, triggerType, triggerStopLoss);
+        }
+
+        private void TryPlaceReversal(JobRuntime runtime, TradeType triggerType, double? triggerStopLoss)
         {
             var j = runtime.Job;
-            if (j.MaxReversals < 1) return;
-            var opposite = trigger.TradeType == TradeType.Buy ? TradeType.Sell : TradeType.Buy;
-            var triggerSl = trigger.StopLoss;
-            if (!triggerSl.HasValue)
+            if (j.MaxReversals < 1 || runtime.ReversalPlaced || runtime.ReversalPlacementInProgress) return;
+            if (!triggerStopLoss.HasValue)
             {
                 Report(runtime, "ERROR", "Cannot place reversal: trigger position has no broker SL");
                 return;
             }
+            runtime.ReversalPlacementInProgress = true;
+            runtime.ReversalTriggerType = triggerType;
+            runtime.ReversalTriggerStopLoss = triggerStopLoss.Value;
+            runtime.ReversalAttempts++;
+            var opposite = triggerType == TradeType.Buy ? TradeType.Sell : TradeType.Buy;
             var offset = (j.ReversalGapPoints ?? 0) * Symbol.TickSize;
-            var target = Math.Round(opposite == TradeType.Sell ? triggerSl.Value - offset : triggerSl.Value + offset, Symbol.Digits);
+            var target = Math.Round(opposite == TradeType.Sell ? triggerStopLoss.Value - offset : triggerStopLoss.Value + offset, Symbol.Digits);
+            var results = new List<TradeResult>();
             for (var i = 1; i <= 3; i++)
             {
                 var tp = i == 1 ? j.TakeProfitPoints : i == 2
                     ? (j.TakeProfit2Points ?? j.TakeProfitPoints) : (j.TakeProfit3Points ?? j.TakeProfitPoints);
-                var result = PlaceStopOrder(opposite, SymbolName, VolumeInUnits(LotForOrder(j)), target,
-                    Label(runtime, "R", opposite, i), PointsToPips(j.StopLossPoints), PointsToPips(tp),
-                    ProtectionType.Relative,
-                    ParseUtc(string.IsNullOrWhiteSpace(j.ManagementExpiresAt) ? j.ExpiresAt : j.ManagementExpiresAt),
-                    "TradeTm reversal " + j.Id, false);
-                if (!result.IsSuccessful) Report(runtime, "ERROR", "Reversal level " + i + ": " + result.Error);
+                results.Add(PlaceReversalOrder(runtime, opposite, i, target, tp));
             }
-            Report(runtime, "ERROR", "One reversal basket placed at trigger SL plus gap");
+            runtime.ReversalPlacementInProgress = false;
+            var accepted = results.Count(x => x != null && x.IsSuccessful);
+            if (accepted == results.Count)
+            {
+                runtime.ReversalPlaced = true;
+                runtime.DeferredReversalTriggerStopLoss = null;
+                Report(runtime, "ACCEPTED", "Reversal basket accepted: 3/3 at initial SL plus gap");
+                return;
+            }
+            RollbackLeg(runtime, "R");
+            var error = results.FirstOrDefault(x => x != null && !x.IsSuccessful);
+            var reversalError = error == null ? "No broker result" : error.Error.ToString();
+            if (runtime.ReversalAttempts < MaxReversalPlacementAttempts && !IsPermanentBrokerError(reversalError) &&
+                DateTime.UtcNow < ManagementExpiry(j))
+            {
+                runtime.NextReversalAttemptAt = DateTime.UtcNow.AddMilliseconds(300);
+                Report(runtime, "ERROR", "Reversal attempt " + runtime.ReversalAttempts + " incomplete (" + accepted + "/3); retry armed. " +
+                    reversalError);
+            }
+            else
+            {
+                runtime.ReversalFailed = true;
+                Report(runtime, "ERROR", "Reversal basket failed after " + runtime.ReversalAttempts + " attempts. " +
+                    reversalError);
+                if (!HasExposure(runtime.Prefix))
+                {
+                    Report(runtime, "CLOSED", "Initial basket closed and reversal could not be established");
+                    runtime.TerminalReported = true;
+                }
+            }
+        }
+
+        private TradeResult PlaceReversalOrder(JobRuntime runtime, TradeType type, int level, double target, int tpPoints)
+        {
+            var j = runtime.Job;
+            var volume = VolumeInUnits(LotForOrder(j));
+            var label = Label(runtime, "R", type, level);
+            var crossed = type == TradeType.Sell ? Symbol.Bid <= target : Symbol.Ask >= target;
+            if (crossed)
+                return ExecuteMarketOrder(type, SymbolName, volume, label, PointsToPips(j.StopLossPoints),
+                    PointsToPips(tpPoints), "TradeTm reversal market fallback " + j.Id);
+            return PlaceStopOrder(type, SymbolName, volume, target, label,
+                PointsToPips(j.StopLossPoints), PointsToPips(tpPoints), ProtectionType.Relative,
+                ManagementExpiry(j), "TradeTm reversal " + j.Id, false);
+        }
+
+        private void ProcessReversalRetry(JobRuntime runtime, DateTime now)
+        {
+            if (runtime.ReversalPlaced || runtime.ReversalFailed || runtime.ReversalPlacementInProgress ||
+                runtime.ReversalAttempts == 0 || now < runtime.NextReversalAttemptAt) return;
+            TryPlaceReversal(runtime, runtime.ReversalTriggerType, runtime.ReversalTriggerStopLoss);
+        }
+
+        private DateTime ManagementExpiry(JobDto job)
+        {
+            return ParseUtc(string.IsNullOrWhiteSpace(job.ManagementExpiresAt) ? job.ExpiresAt : job.ManagementExpiresAt);
+        }
+
+        private static bool IsPermanentBrokerError(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error)) return false;
+            var value = error.ToUpperInvariant();
+            return value.Contains("MONEY") || value.Contains("VOLUME") || value.Contains("TRADING_DISABLED") ||
+                value.Contains("MARKET_CLOSED") || value.Contains("NO_TRADING_PERMISSION");
         }
 
         private void OnPositionClosed(PositionClosedEventArgs args)
@@ -479,6 +574,11 @@ namespace cAlgo.Robots
             if (runtime == null) return;
             BeginInvokeOnMainThread(() =>
             {
+                if (runtime.RollbackInProgress) return;
+                if (runtime.Job.ExecutionMode == "NEWS_REVERSAL" && !runtime.Submitted &&
+                    runtime.InitialAttempts > 0 && runtime.InitialAttempts < 3) return;
+                if (runtime.Job.ExecutionMode == "NEWS_REVERSAL" && runtime.ReversalAttempts > 0 &&
+                    !runtime.ReversalPlaced && !runtime.ReversalFailed) return;
                 if (!HasExposure(runtime.Prefix))
                 {
                     Report(runtime, "CLOSED", "All job positions and orders are closed");
@@ -514,12 +614,61 @@ namespace cAlgo.Robots
                 CancelPendingOrder(order);
         }
 
+        private void RollbackLeg(JobRuntime runtime, string leg)
+        {
+            runtime.RollbackInProgress = true;
+            try
+            {
+                var marker = string.IsNullOrWhiteSpace(leg) ? null : ":" + leg + ":";
+                foreach (var order in PendingOrders.Where(o => IsJobLabel(o.Label, runtime.Prefix) &&
+                    (marker == null || o.Label.Contains(marker))).ToArray())
+                    CancelPendingOrder(order);
+                foreach (var position in Positions.Where(p => IsJobLabel(p.Label, runtime.Prefix) &&
+                    (marker == null || p.Label.Contains(marker))).ToArray())
+                    ClosePosition(position);
+            }
+            finally { runtime.RollbackInProgress = false; }
+        }
+
+        private int ManagedExposureCount()
+        {
+            return Positions.Count(p => IsTradeTmLabel(p.Label)) + PendingOrders.Count(o => IsTradeTmLabel(o.Label));
+        }
+
+        private string BuildPreflightSummary(JobRuntime runtime)
+        {
+            try
+            {
+                var job = runtime.Job;
+                var volume = VolumeInUnits(LotForOrder(job));
+                var orderCount = ExpectedOrderCount(job);
+                var estimated = Math.Max(Symbol.GetEstimatedMargin(TradeType.Buy, volume),
+                    Symbol.GetEstimatedMargin(TradeType.Sell, volume)) * orderCount;
+                var warnings = new List<string>();
+                if (!Symbol.IsTradingEnabled) warnings.Add("symbol trading disabled");
+                if ((job.ExecutionMode == "MULTI" || job.ExecutionMode == "NEWS_REVERSAL") && Account.AccountType != AccountType.Hedged)
+                    warnings.Add("account is not Hedged");
+                if (volume < Symbol.VolumeInUnitsMin || volume > Symbol.VolumeInUnitsMax)
+                    warnings.Add("volume outside broker range");
+                if (estimated * (1.0 + MarginBufferPercent / 100.0) > Account.FreeMargin)
+                    warnings.Add("estimated margin exceeds free margin; NEWS_REVERSAL will still be submitted to broker");
+                return "Local timer armed; spread=" + SpreadPoints() + " (limit OFF), estimated margin=" +
+                    estimated.ToString("F2") + ", free margin=" + Account.FreeMargin.ToString("F2") +
+                    (warnings.Count == 0 ? "; preflight OK" : "; WARNING: " + string.Join(", ", warnings));
+            }
+            catch (Exception ex)
+            {
+                return "Local timer armed; WARNING: preflight estimate unavailable: " + ex.Message;
+            }
+        }
+
         private bool HasExposure(string prefix)
         {
             return PendingOrders.Any(o => IsJobLabel(o.Label, prefix)) || Positions.Any(p => IsJobLabel(p.Label, prefix));
         }
 
         private static bool IsJobLabel(string label, string prefix) { return !string.IsNullOrEmpty(label) && label.StartsWith(prefix + ":", StringComparison.Ordinal); }
+        private static bool IsTradeTmLabel(string label) { return !string.IsNullOrEmpty(label) && label.StartsWith("tt", StringComparison.Ordinal); }
 
         private JobRuntime RuntimeForLabel(string label)
         {
@@ -618,6 +767,18 @@ namespace cAlgo.Robots
             public bool Armed { get; set; }
             public bool Submitted { get; set; }
             public bool ReversalPlaced { get; set; }
+            public bool ReversalFailed { get; set; }
+            public bool ReversalPlacementInProgress { get; set; }
+            public bool InitialBasketPlacementInProgress { get; set; }
+            public bool RollbackInProgress { get; set; }
+            public int InitialAttempts { get; set; }
+            public DateTime NextInitialAttemptAt { get; set; }
+            public int ReversalAttempts { get; set; }
+            public DateTime NextReversalAttemptAt { get; set; }
+            public TradeType ReversalTriggerType { get; set; }
+            public double ReversalTriggerStopLoss { get; set; }
+            public TradeType DeferredReversalTriggerType { get; set; }
+            public double? DeferredReversalTriggerStopLoss { get; set; }
             public bool TerminalReported { get; set; }
             public double AnchorAsk { get; set; }
             public double AnchorBid { get; set; }

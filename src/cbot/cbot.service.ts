@@ -13,11 +13,13 @@ import { CbotHeartbeatDto } from "./dto/cbot-heartbeat.dto";
 export class CbotService {
   private readonly pepper: string;
   private readonly ttlSeconds: number;
+  private readonly telegramBotToken?: string;
 
   constructor(private readonly prisma: PrismaService, config: ConfigService,
     private readonly subscriptions: SubscriptionsService) {
     this.pepper = config.getOrThrow<string>("AGENT_TOKEN_PEPPER");
     this.ttlSeconds = config.getOrThrow<number>("PAIRING_CODE_TTL_SECONDS");
+    this.telegramBotToken = config.get<string>("TELEGRAM_BOT_TOKEN");
   }
 
   async createPairingCode(userId: string) {
@@ -158,7 +160,10 @@ export class CbotService {
   }
 
   async report(instanceId: string, jobId: string, dto: SubmitExecutionReportDto) {
-    const job = await this.prisma.tradeJob.findFirst({ where: { id: jobId, cbotInstanceId: instanceId, executionVenue: "CBOT" } });
+    const job = await this.prisma.tradeJob.findFirst({
+      where: { id: jobId, cbotInstanceId: instanceId, executionVenue: "CBOT" },
+      include: { user: { select: { telegramId: true } } },
+    });
     if (!job) throw new NotFoundException("cBot trade job not found");
     const existing = await this.prisma.executionReport.findUnique({ where: { reportKey: dto.reportKey } });
     if (existing) {
@@ -172,7 +177,7 @@ export class CbotService {
     // Persist every report, but never downgrade an already more advanced job state.
     const nextStatus = requestedStatus && canTransition(job.status, requestedStatus) ? requestedStatus : undefined;
     const occurredAt = new Date(dto.occurredAt);
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const report = await tx.executionReport.create({ data: {
         jobId, executionSource: `CBOT:${instanceId}`, reportKey: dto.reportKey, phase, occurredAt,
         orderTicket: dto.orderTicket, dealTicket: dto.dealTicket, retcode: dto.retcode,
@@ -186,6 +191,22 @@ export class CbotService {
         action: `EXECUTION_${phase}`, entityType: "TradeJob", entityId: jobId,
         metadata: { reportKey: dto.reportKey } } });
       return { accepted: true, duplicate: false, reportId: report.id, jobStatus: nextStatus ?? job.status };
+    });
+    if (["PREFLIGHT_REJECTED", "REJECTED", "ERROR"].includes(dto.phase) ||
+        (dto.phase === "ARMED" && dto.message?.includes("WARNING"))) {
+      void this.notifyTelegram(job.user.telegramId, job.symbol, job.executionMode, dto.phase, dto.message)
+        .catch(() => undefined);
+    }
+    return result;
+  }
+
+  private async notifyTelegram(telegramId: bigint, symbol: string, mode: string, phase: string, message?: string) {
+    if (!this.telegramBotToken) return;
+    await fetch(`https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: telegramId.toString(), text: `⚠️ ${symbol} ${mode}\n${phase}\n${message ?? "No details"}` }),
+      signal: AbortSignal.timeout(5_000),
     });
   }
 
