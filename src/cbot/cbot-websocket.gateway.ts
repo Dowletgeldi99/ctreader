@@ -9,6 +9,7 @@ import { CbotService } from "./cbot.service";
 import { ClaimCbotPairingDto } from "./dto/claim-cbot-pairing.dto";
 import { CbotHeartbeatDto } from "./dto/cbot-heartbeat.dto";
 import { SubmitExecutionReportDto } from "../trade-jobs/dto/submit-execution-report.dto";
+import { CbotCandleBatchDto } from "./dto/cbot-candle-batch.dto";
 
 type ClientMessage = { id?: string; type?: string; token?: string; payload?: unknown };
 
@@ -134,6 +135,10 @@ export class CbotWebSocketGateway implements OnApplicationBootstrap, OnApplicati
         if (typeof payload.jobId !== "string") throw new Error("jobId is required");
         const report = await this.dto(SubmitExecutionReportDto, payload.report);
         return this.respond(connection, id, true, await this.cbots.report(instance.id, payload.jobId, report));
+      }
+      if (message.type === "CANDLE_BATCH") {
+        const dto = await this.dto(CbotCandleBatchDto, message.payload);
+        return this.respond(connection, id, true, await this.cbots.ingestStrategyCandles(instance.id, dto));
       }
       throw new Error(`Unsupported message type ${message.type}`);
     } catch (error) {

@@ -318,6 +318,8 @@ model CbotInstance {
   updatedAt           DateTime           @updatedAt
   user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   tradeJobs           TradeJob[]
+  strategyConfigs     StrategyConfig[]
+  strategyPositions   StrategyPosition[]
 
   @@unique([broker, accountNumber, environment])
   @@index([userId, status])
@@ -393,6 +395,7 @@ model StrategyConfig {
   userId                String          @db.Uuid
   cTraderAccountId      String?         @db.Uuid
   accountId             String?         @db.Uuid
+  cbotInstanceId        String?         @db.Uuid
   executionVenue        ExecutionVenue  @default(CTRADER)
   symbol                String          @default("XAUUSD")
   enabled               Boolean         @default(false)
@@ -412,10 +415,12 @@ model StrategyConfig {
   user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   cTraderAccount        CTraderAccount? @relation(fields: [cTraderAccountId], references: [id], onDelete: Cascade)
   account               TradingAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  cbotInstance          CbotInstance?    @relation(fields: [cbotInstanceId], references: [id], onDelete: Cascade)
   positions             StrategyPosition[]
 
   @@unique([userId, cTraderAccountId, symbol])
   @@unique([userId, accountId, symbol])
+  @@unique([userId, cbotInstanceId, symbol])
   @@index([enabled, symbol])
 }
 
@@ -424,6 +429,7 @@ model StrategyPosition {
   userId                String                @db.Uuid
   cTraderAccountId      String?               @db.Uuid
   accountId             String?               @db.Uuid
+  cbotInstanceId        String?               @db.Uuid
   executionVenue        ExecutionVenue        @default(CTRADER)
   strategyConfigId      String                @db.Uuid
   symbol                String
@@ -449,6 +455,7 @@ model StrategyPosition {
   user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   cTraderAccount        CTraderAccount?       @relation(fields: [cTraderAccountId], references: [id], onDelete: Restrict)
   account               TradingAccount?       @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  cbotInstance          CbotInstance?          @relation(fields: [cbotInstanceId], references: [id], onDelete: Restrict)
   strategyConfig        StrategyConfig        @relation(fields: [strategyConfigId], references: [id], onDelete: Restrict)
   events                StrategyEvent[]
 

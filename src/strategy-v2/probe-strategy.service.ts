@@ -43,6 +43,17 @@ export class ProbeStrategyService {
     });
   }
 
+  async enableForCbotUser(userId: string, cbotInstanceId: string, enabled: boolean) {
+    const instance = await this.prisma.cbotInstance.findFirst({ where: { id: cbotInstanceId, userId } });
+    if (!instance) throw new NotFoundException("cBot instance not found");
+    if (instance.environment !== "DEMO") throw new BadRequestException("Strategy V2 is demo-only");
+    return this.prisma.strategyConfig.upsert({
+      where: { userId_cbotInstanceId_symbol: { userId, cbotInstanceId, symbol: "XAUUSD" } },
+      create: { userId, cbotInstanceId, executionVenue: "CBOT", symbol: "XAUUSD", enabled },
+      update: { enabled },
+    });
+  }
+
   async ingestFromMt5(agent: Agent, input: CandleInput, evaluate = true): Promise<void> {
     const account = await this.prisma.tradingAccount.findFirst({ where: { agentId: agent.id, userId: agent.userId } });
     if (!account) throw new NotFoundException("MT5 account not found");
@@ -61,16 +72,22 @@ export class ProbeStrategyService {
     });
   }
 
-  async ingest(input: CandleInput, accountId?: string, evaluate = true): Promise<void> {
+  async ingest(input: CandleInput, executionAccountId?: string, evaluate = true): Promise<void> {
     this.validateCandle(input);
     const source = input.source ?? "MOCK";
-    await this.prisma.marketCandle.upsert({
-      where: {
-        symbol_timeframe_openTime_source: {
-          symbol: input.symbol.toUpperCase(), timeframe: input.timeframe, openTime: input.openTime, source,
-        },
-      },
-      create: {
+    const key = { symbol: input.symbol.toUpperCase(), timeframe: input.timeframe, openTime: input.openTime, source };
+    const existing = await this.prisma.marketCandle.findUnique({
+      where: { symbol_timeframe_openTime_source: key },
+    });
+    if (existing) {
+      await this.prisma.marketCandle.update({ where: { id: existing.id }, data: {
+        open: input.open, high: input.high, low: input.low, close: input.close,
+        spreadPoints: input.spreadPoints ?? 0,
+      } });
+      return;
+    }
+    await this.prisma.marketCandle.create({
+      data: {
         symbol: input.symbol.toUpperCase(),
         timeframe: input.timeframe,
         openTime: input.openTime,
@@ -81,17 +98,15 @@ export class ProbeStrategyService {
         spreadPoints: input.spreadPoints ?? 0,
         source,
       },
-      update: {
-        open: input.open, high: input.high, low: input.low, close: input.close,
-        spreadPoints: input.spreadPoints ?? 0,
-      },
     });
     if (input.timeframe !== "M15" || !evaluate) return;
     const configs = await this.prisma.strategyConfig.findMany({
       where: {
         enabled: true,
         symbol: input.symbol.toUpperCase(),
-        ...(accountId ? { executionVenue: "MT5", accountId } : { executionVenue: "CTRADER" }),
+        ...(source.startsWith("CBOT:")
+          ? { executionVenue: "CBOT", cbotInstanceId: executionAccountId }
+          : executionAccountId ? { executionVenue: "MT5", accountId: executionAccountId } : { executionVenue: "CTRADER" }),
       },
     });
     for (const config of configs) await this.evaluate(config.id, input.openTime, source, input.point);
@@ -176,6 +191,7 @@ export class ProbeStrategyService {
         userId: config.userId,
         cTraderAccountId: config.cTraderAccountId,
         accountId: config.accountId,
+        cbotInstanceId: config.cbotInstanceId,
         executionVenue: config.executionVenue,
         strategyConfigId: config.id,
         symbol: config.symbol, direction, state: "PROBE_OPEN", breakoutLevel: level,
@@ -189,6 +205,8 @@ export class ProbeStrategyService {
     });
     if (config.executionVenue === "MT5" && config.accountId) {
       await this.scheduleMt5Leg(position.id, config.userId, config.accountId, direction, current.close, stop, target, point, "PROBE");
+    } else if (config.executionVenue === "CBOT" && config.cbotInstanceId) {
+      await this.scheduleCbotLeg(position.id, config.userId, config.cbotInstanceId, direction, current.close, stop, target, point, "PROBE");
     }
   }
 
@@ -222,6 +240,9 @@ export class ProbeStrategyService {
       const full = await this.prisma.strategyPosition.findUnique({ where: { id: updated.id } });
       if (full?.executionVenue === "MT5" && full.accountId) {
         await this.scheduleMt5Leg(full.id, full.userId, full.accountId, full.direction, candle.close,
+          Number(full.stopLossPrice), Number(full.takeProfitPrice), undefined, "MAIN");
+      } else if (full?.executionVenue === "CBOT" && full.cbotInstanceId) {
+        await this.scheduleCbotLeg(full.id, full.userId, full.cbotInstanceId, full.direction, candle.close,
           Number(full.stopLossPrice), Number(full.takeProfitPrice), undefined, "MAIN");
       }
       return;
@@ -261,6 +282,42 @@ export class ProbeStrategyService {
       data: {
         strategyPositionId: positionId, type: `MT5_${leg}_SCHEDULED`, occurredAt: new Date(), price: entry,
         message: `MT5 demo ${leg.toLowerCase()} order scheduled at fixed 0.01 lot`, metadata: { requestId: randomUUID() },
+      },
+    });
+  }
+
+  private async scheduleCbotLeg(positionId: string, userId: string, cbotInstanceId: string,
+    direction: "BUY" | "SELL", entry: number, stop: number, target: number, pointInput: number | undefined,
+    leg: "PROBE" | "MAIN"): Promise<void> {
+    const instance = await this.prisma.cbotInstance.findFirst({
+      where: { id: cbotInstanceId, userId, environment: "DEMO", status: "ONLINE" },
+    });
+    if (!instance) throw new BadRequestException("cBot demo instance is unavailable");
+    const inferredPoint = entry >= 100 ? 0.01 : 0.0001;
+    const point = pointInput && pointInput > 0 ? pointInput : inferredPoint;
+    const stopLossPoints = Math.max(1, Math.round(Math.abs(entry - stop) / point));
+    const takeProfitPoints = Math.max(1, Math.round(Math.abs(target - entry) / point));
+    const executeAt = new Date(Date.now() + 3_000);
+    await this.prisma.tradeJob.create({
+      data: {
+        userId, cbotInstanceId, executionVenue: "CBOT", idempotencyKey: `strategy-v2:${positionId}:${leg}`,
+        symbol: instance.symbol, direction, executionMode: "MARKET", riskMode: "FIXED_LOT", fixedLot: 0.01,
+        stopLossPoints, takeProfitPoints, deviationPoints: 20, maxSpreadPoints: 0,
+        armSeconds: 2, maxLatenessMs: 10_000, executeAt,
+        expiresAt: new Date(executeAt.getTime() + 10_000), status: "SCHEDULED",
+        settingsSnapshot: {
+          protocolVersion: 2, strategy: "PROBE_ENTRY_V2", strategyPositionId: positionId,
+          leg, demoOnly: true, expectedEntry: entry, sharedStop: stop, sharedTarget: target,
+        },
+      },
+    }).catch((error: unknown) => {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return undefined;
+      throw error;
+    });
+    await this.prisma.strategyEvent.create({
+      data: {
+        strategyPositionId: positionId, type: `CBOT_${leg}_SCHEDULED`, occurredAt: new Date(), price: entry,
+        message: `cBot demo ${leg.toLowerCase()} order scheduled at fixed 0.01 lot`, metadata: { requestId: randomUUID() },
       },
     });
   }

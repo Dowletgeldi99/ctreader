@@ -81,7 +81,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.webhookSecret = config.get<string>("TELEGRAM_WEBHOOK_SECRET");
     const configuredCbotUrl = config.get<string>("CBOT_INSTALL_URL");
     this.cbotInstallUrl = configuredCbotUrl || (this.publicBaseUrl
-      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.2.0`
+      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.3.0`
       : undefined);
     this.adminTelegramIds = new Set((config.get<string>("TELEGRAM_ADMIN_IDS") ?? "")
       .split(",").map((value) => value.trim()).filter(Boolean));
@@ -669,13 +669,15 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     bot.command("mock_results", async (ctx) => this.sendMockResults(ctx));
     bot.command("strategy_v2", async (ctx) => this.sendStrategyV2(ctx));
     bot.command("strategy_demo", async (ctx) => this.runStrategyDemo(ctx));
-    bot.callbackQuery(/^strategy_v2:(on|off):(MT5|CTRADER):(.+)$/, async (ctx) => {
+    bot.callbackQuery(/^strategy_v2:(on|off):(MT5|CTRADER|CBOT):(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const user = await this.users.findByTelegramId(BigInt(ctx.from.id));
       if (!user) return;
       try {
         if (ctx.match[2] === "MT5") {
           await this.probeStrategy.enableForMt5User(user.id, ctx.match[3], ctx.match[1] === "on");
+        } else if (ctx.match[2] === "CBOT") {
+          await this.probeStrategy.enableForCbotUser(user.id, ctx.match[3], ctx.match[1] === "on");
         } else {
           await this.probeStrategy.enableForUser(user.id, ctx.match[3], ctx.match[1] === "on");
         }
@@ -1068,8 +1070,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
     const cTraderAccounts = await this.cTrader.listUserAccounts(user.id);
     const mt5Accounts = user.accounts.filter((account) => account.environment === "DEMO");
-    if (cTraderAccounts.length + mt5Accounts.length === 0) {
-      await ctx.reply("Сначала подключите MT5 demo или создайте cTrader mock-счёт.");
+    const cbotAccounts = user.cbotInstances.filter((account) => account.environment === "DEMO");
+    if (cTraderAccounts.length + mt5Accounts.length + cbotAccounts.length === 0) {
+      await ctx.reply("Сначала подключите demo-счёт MT5, cTrader или cBot Cloud.");
       return;
     }
     const configs = await this.probeStrategy.statusForUser(user.id);
@@ -1092,13 +1095,20 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         )
         .row();
     }
+    for (const account of cbotAccounts) {
+      const config = configs.find((item) => item.cbotInstanceId === account.id);
+      keyboard.text(
+        `${config?.enabled ? "Выключить" : "Включить"} · cBot ${account.accountNumber.toString()} @ ${account.broker}`,
+        `strategy_v2:${config?.enabled ? "off" : "on"}:CBOT:${account.id}`,
+      ).row();
+    }
     const active = configs.flatMap((config) => config.positions).find((position) => ["PROBE_OPEN", "MAIN_ADDED"].includes(position.state));
     await ctx.reply([
       "Strategy V2 · XAUUSD",
       "H1 EMA 50/200 · M15 breakout 20 · ATR 14",
       "Probe risk 0.10% · Main risk 0.30% · TP 3R",
       `Активная позиция: ${active ? `${active.direction} ${active.state}` : "нет"}`,
-      "MT5 исполняет только на DEMO фиксированными 0.01 + 0.01 lot.",
+      "MT5/cBot Cloud исполняют только на DEMO фиксированными 0.01 + 0.01 lot.",
     ].join("\n"), { reply_markup: keyboard });
   }
 

@@ -35,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.2.0";
+        private const string Version = "1.3.0";
         private const int PendingPlacementLeadSeconds = 3;
         private const int MaxReversalPlacementAttempts = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
@@ -62,6 +62,11 @@ namespace cAlgo.Robots
         private long _requestSequence;
         private bool _pollInFlight;
         private bool _heartbeatInFlight;
+        private Bars _m15Bars;
+        private Bars _h1Bars;
+        private bool _strategyHistorySent;
+        private DateTime _lastM15Candle = DateTime.MinValue;
+        private DateTime _lastH1Candle = DateTime.MinValue;
 
         protected override void OnStart()
         {
@@ -81,6 +86,8 @@ namespace cAlgo.Robots
                 LocalStorage.Flush(LocalStorageScope.Instance);
             }
             _token = LocalStorage.GetString(TokenKey);
+            _m15Bars = MarketData.GetBars(TimeFrame.Minute15, SymbolName);
+            _h1Bars = MarketData.GetBars(TimeFrame.Hour, SymbolName);
 
             PendingOrders.Filled += OnPendingFilled;
             Positions.Closed += OnPositionClosed;
@@ -125,6 +132,7 @@ namespace cAlgo.Robots
                 if (_pollInFlight && (now - _lastPoll).TotalSeconds >= 10) _pollInFlight = false;
                 if (!_heartbeatInFlight && (now - _lastHeartbeat).TotalSeconds >= 20) Heartbeat();
                 if (!_pollInFlight && (now - _lastPoll).TotalMilliseconds >= PollIntervalMs) Poll();
+                SyncStrategyCandles();
                 ProcessJobs(now);
             }
             catch (Exception ex) { Print("TradeTm timer error: {0}", ex.Message); }
@@ -183,6 +191,53 @@ namespace cAlgo.Robots
             _pollInFlight = true;
             SendWs("POLL", new { horizonMinutes = 1440 }, true);
             _lastPoll = DateTime.UtcNow;
+        }
+
+        private void SyncStrategyCandles()
+        {
+            if (Account.IsLive) return;
+            if (!_strategyHistorySent)
+            {
+                var history = new List<CandleDto>();
+                AppendClosedBars(history, _h1Bars, "H1", 220, ref _lastH1Candle);
+                AppendClosedBars(history, _m15Bars, "M15", 30, ref _lastM15Candle);
+                if (history.Count > 0) SendWs("CANDLE_BATCH", new { candles = history }, true);
+                _strategyHistorySent = true;
+                Print("Strategy V2 history sent: {0} closed candles", history.Count);
+                return;
+            }
+            var updates = new List<CandleDto>();
+            AppendNewClosedBar(updates, _h1Bars, "H1", ref _lastH1Candle);
+            AppendNewClosedBar(updates, _m15Bars, "M15", ref _lastM15Candle);
+            if (updates.Count > 0) SendWs("CANDLE_BATCH", new { candles = updates }, true);
+        }
+
+        private void AppendClosedBars(List<CandleDto> target, Bars bars, string timeframe, int requested,
+            ref DateTime latest)
+        {
+            var count = Math.Min(requested, Math.Max(0, bars.Count - 1));
+            for (var offset = count; offset >= 1; offset--)
+                target.Add(ToCandle(bars, timeframe, offset));
+            if (count > 0) latest = bars.OpenTimes.Last(1);
+        }
+
+        private void AppendNewClosedBar(List<CandleDto> target, Bars bars, string timeframe, ref DateTime latest)
+        {
+            if (bars.Count < 2) return;
+            var openTime = bars.OpenTimes.Last(1);
+            if (openTime <= latest) return;
+            target.Add(ToCandle(bars, timeframe, 1));
+            latest = openTime;
+        }
+
+        private CandleDto ToCandle(Bars bars, string timeframe, int offset)
+        {
+            return new CandleDto
+            {
+                Symbol = SymbolName, Timeframe = timeframe, OpenTime = bars.OpenTimes.Last(offset).ToUniversalTime().ToString("O"),
+                Open = bars.OpenPrices.Last(offset), High = bars.HighPrices.Last(offset), Low = bars.LowPrices.Last(offset),
+                Close = bars.ClosePrices.Last(offset), SpreadPoints = SpreadPoints(), Point = Symbol.TickSize
+            };
         }
 
         private void ApplyPoll(PollResponse response)
@@ -802,6 +857,18 @@ namespace cAlgo.Robots
         private sealed class WsRequest { public string Id { get; set; } public string Type { get; set; } public string Token { get; set; } public object Payload { get; set; } }
         private sealed class WsResponse { public string Id { get; set; } public bool Ok { get; set; } public JsonElement Payload { get; set; } public string Error { get; set; } public int? Status { get; set; } }
         private sealed class PendingReport { public string JobId { get; set; } public ReportRequest Body { get; set; } }
+        private sealed class CandleDto
+        {
+            public string Symbol { get; set; }
+            public string Timeframe { get; set; }
+            public string OpenTime { get; set; }
+            public double Open { get; set; }
+            public double High { get; set; }
+            public double Low { get; set; }
+            public double Close { get; set; }
+            public int SpreadPoints { get; set; }
+            public double Point { get; set; }
+        }
         private sealed class ReportRequest
         {
             public string ReportKey { get; set; }

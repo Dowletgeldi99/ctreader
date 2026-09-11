@@ -8,6 +8,8 @@ import { SubmitExecutionReportDto } from "../trade-jobs/dto/submit-execution-rep
 import { canTransition, statusForPhase } from "../trade-jobs/trade-job-state";
 import type { ExecutionPhase, Prisma, TradeJobStatus } from "../generated/prisma/client";
 import { CbotHeartbeatDto } from "./dto/cbot-heartbeat.dto";
+import { CbotCandleBatchDto } from "./dto/cbot-candle-batch.dto";
+import { ProbeStrategyService } from "../strategy-v2/probe-strategy.service";
 
 @Injectable()
 export class CbotService {
@@ -16,10 +18,26 @@ export class CbotService {
   private readonly telegramBotToken?: string;
 
   constructor(private readonly prisma: PrismaService, config: ConfigService,
-    private readonly subscriptions: SubscriptionsService) {
+    private readonly subscriptions: SubscriptionsService, private readonly probeStrategy: ProbeStrategyService) {
     this.pepper = config.getOrThrow<string>("AGENT_TOKEN_PEPPER");
     this.ttlSeconds = config.getOrThrow<number>("PAIRING_CODE_TTL_SECONDS");
     this.telegramBotToken = config.get<string>("TELEGRAM_BOT_TOKEN");
+  }
+
+  async ingestStrategyCandles(instanceId: string, dto: CbotCandleBatchDto) {
+    const instance = await this.prisma.cbotInstance.findUnique({ where: { id: instanceId } });
+    if (!instance) throw new NotFoundException("cBot instance not found");
+    if (instance.environment !== "DEMO") throw new BadRequestException("Strategy V2 is demo-only");
+    const source = `CBOT:${instance.id}`;
+    const candles = [...dto.candles].sort((a, b) => new Date(a.openTime).getTime() - new Date(b.openTime).getTime());
+    for (let index = 0; index < candles.length; index += 1) {
+      const candle = candles[index];
+      if (candle.symbol.toUpperCase() !== instance.symbol.toUpperCase())
+        throw new BadRequestException("Candle symbol does not match cBot instance");
+      await this.probeStrategy.ingest({ ...candle, openTime: new Date(candle.openTime), source }, instance.id,
+        candle.timeframe === "M15" && index === candles.length - 1);
+    }
+    return { accepted: candles.length };
   }
 
   async createPairingCode(userId: string) {
@@ -192,6 +210,17 @@ export class CbotService {
         metadata: { reportKey: dto.reportKey } } });
       return { accepted: true, duplicate: false, reportId: report.id, jobStatus: nextStatus ?? job.status };
     });
+    if (["PREFLIGHT_REJECTED", "REJECTED"].includes(dto.phase)) {
+      const snapshot = job.settingsSnapshot as Prisma.JsonObject;
+      const positionId = typeof snapshot.strategyPositionId === "string" ? snapshot.strategyPositionId : undefined;
+      const leg = snapshot.leg;
+      if (snapshot.strategy === "PROBE_ENTRY_V2" && leg === "PROBE" && positionId) {
+        await this.prisma.strategyPosition.updateMany({
+          where: { id: positionId, state: "PROBE_OPEN" },
+          data: { state: "CLOSED_TIMEOUT", closedAt: occurredAt, closeReason: `cBot rejected probe: ${dto.message ?? dto.phase}` },
+        });
+      }
+    }
     if (["PREFLIGHT_REJECTED", "REJECTED", "ERROR"].includes(dto.phase) ||
         (dto.phase === "ARMED" && dto.message?.includes("WARNING"))) {
       void this.notifyTelegram(job.user.telegramId, job.symbol, job.executionMode, dto.phase, dto.message)

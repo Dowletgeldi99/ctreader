@@ -17,6 +17,16 @@ Backend URL и безопасные defaults уже находятся внут�
 редактор кода, собственный VPS и ручной Build клиенту не нужны. Cloud instance
 работает независимо от телефона.
 
+## Strategy V2 на cBot Cloud
+
+Strategy V2 работает только на DEMO-счёте. После запуска cBot передаёт backend
+220 закрытых H1 и 30 закрытых M15 свечей XAUUSD, затем каждую новую закрытую
+свечу. В Telegram выполните `/strategy_v2` и включите нужный cBot demo.
+
+Сигнал использует EMA 50/200 на H1, breakout 20 на M15 и ATR 14. Сначала
+открывается Probe 0.01 lot, после подтверждения — Main 0.01 lot. Обе позиции
+получают расчётные SL и TP 3R. LIVE-счета для Strategy V2 сервер отклоняет.
+
 Cloud connector использует только `wss://bot.tradetm.club:25345/api/v1/cbot/ws`.
 cTrader Cloud не отправляет HTTP-запросы из cBot, поэтому HTTP остаётся только
 для скачивания `.algo`. На VPS должен быть открыт TCP `25345`.
