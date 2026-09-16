@@ -410,6 +410,18 @@ model StrategyConfig {
   maxSpreadPoints       Int             @default(50)
   confirmationBars      Int             @default(3)
   cooldownBars          Int             @default(4)
+  regimeFilterEnabled   Boolean         @default(true)
+  minEmaSeparationAtr   Decimal         @default(0.15) @db.Decimal(6, 4)
+  minEmaSlopeAtr        Decimal         @default(0.01) @db.Decimal(6, 4)
+  minBreakoutBodyRatio  Decimal         @default(0.55) @db.Decimal(6, 4)
+  minBreakoutCloseAtr   Decimal         @default(0.10) @db.Decimal(6, 4)
+  maxOppositeWickRatio  Decimal         @default(0.35) @db.Decimal(6, 4)
+  maxBreakoutRangeAtr   Decimal         @default(2.50) @db.Decimal(6, 4)
+  minTickVolumeRatio    Decimal         @default(0.80) @db.Decimal(6, 4)
+  newsGuardEnabled      Boolean         @default(true)
+  newsGuardBeforeMinutes Int            @default(30)
+  newsGuardAfterMinutes Int             @default(30)
+  candidateLabelHorizonBars Int         @default(16)
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
   user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -417,11 +429,37 @@ model StrategyConfig {
   account               TradingAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
   cbotInstance          CbotInstance?    @relation(fields: [cbotInstanceId], references: [id], onDelete: Cascade)
   positions             StrategyPosition[]
+  candidates            StrategyCandidate[]
 
   @@unique([userId, cTraderAccountId, symbol])
   @@unique([userId, accountId, symbol])
   @@unique([userId, cbotInstanceId, symbol])
   @@index([enabled, symbol])
+}
+
+model StrategyCandidate {
+  id                    String          @id @default(uuid()) @db.Uuid
+  strategyConfigId      String          @db.Uuid
+  symbol                String
+  source                String
+  candleTime            DateTime
+  direction             TradeDirection
+  regime                String
+  decision              String
+  reason                 String
+  features               Json
+  entryPrice             Decimal         @db.Decimal(30, 10)
+  stopLossPrice          Decimal         @db.Decimal(30, 10)
+  takeProfitPrice        Decimal         @db.Decimal(30, 10)
+  labelExpiresAt         DateTime
+  outcome                String?
+  resolvedAt             DateTime?
+  createdAt              DateTime        @default(now())
+  strategyConfig        StrategyConfig  @relation(fields: [strategyConfigId], references: [id], onDelete: Cascade)
+
+  @@unique([strategyConfigId, source, candleTime])
+  @@index([symbol, candleTime])
+  @@index([decision, createdAt])
 }
 
 model StrategyPosition {
@@ -486,7 +524,9 @@ model MarketCandle {
   high                  Decimal           @db.Decimal(30, 10)
   low                   Decimal           @db.Decimal(30, 10)
   close                 Decimal           @db.Decimal(30, 10)
-  spreadPoints          Int               @default(0)
+  spreadPoints          Int?
+  tickVolume            Decimal?          @db.Decimal(30, 4)
+  isHistorical          Boolean           @default(false)
   source                String            @default("MOCK")
   createdAt             DateTime          @default(now())
 

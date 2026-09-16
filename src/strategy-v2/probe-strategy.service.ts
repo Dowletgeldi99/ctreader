@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
-import { atr, breakoutLevel, CandleValue, ema } from "./probe-strategy.math";
+import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectMarketRegime, resolveBarrierOutcome } from "./probe-strategy.math";
 import type { Agent } from "../generated/prisma/client";
 import { randomUUID } from "node:crypto";
 
@@ -16,6 +16,8 @@ export interface CandleInput {
   spreadPoints?: number;
   source?: string;
   point?: number;
+  tickVolume?: number;
+  isHistorical?: boolean;
 }
 
 @Injectable()
@@ -68,6 +70,7 @@ export class ProbeStrategyService {
         cTraderAccount: true,
         account: true,
         positions: { include: { events: { orderBy: { occurredAt: "asc" } } }, orderBy: { createdAt: "desc" }, take: 3 },
+        candidates: { orderBy: { candleTime: "desc" }, take: 3 },
       },
     });
   }
@@ -82,7 +85,8 @@ export class ProbeStrategyService {
     if (existing) {
       await this.prisma.marketCandle.update({ where: { id: existing.id }, data: {
         open: input.open, high: input.high, low: input.low, close: input.close,
-        spreadPoints: input.spreadPoints ?? 0,
+        spreadPoints: input.spreadPoints, tickVolume: input.tickVolume,
+        isHistorical: input.isHistorical ?? false,
       } });
       return;
     }
@@ -95,11 +99,13 @@ export class ProbeStrategyService {
         high: input.high,
         low: input.low,
         close: input.close,
-        spreadPoints: input.spreadPoints ?? 0,
+        spreadPoints: input.spreadPoints,
+        tickVolume: input.tickVolume,
+        isHistorical: input.isHistorical ?? false,
         source,
       },
     });
-    if (input.timeframe !== "M15" || !evaluate) return;
+    if (input.timeframe !== "M15" || !evaluate || input.isHistorical) return;
     const configs = await this.prisma.strategyConfig.findMany({
       where: {
         enabled: true,
@@ -150,6 +156,7 @@ export class ProbeStrategyService {
     });
     if (!currentRecord) return;
     const current = this.toValue(currentRecord);
+    await this.settleCandidates(config.id, source, current);
     const active = await this.prisma.strategyPosition.findFirst({
       where: { strategyConfigId: config.id, state: { in: ["PROBE_OPEN", "MAIN_ADDED"] } },
       orderBy: { createdAt: "desc" },
@@ -158,7 +165,6 @@ export class ProbeStrategyService {
       await this.managePosition(active, current);
       return;
     }
-    if (current.spreadPoints > config.maxSpreadPoints) return;
     const lastClosed = await this.prisma.strategyPosition.findFirst({
       where: { strategyConfigId: config.id, closedAt: { not: null } }, orderBy: { closedAt: "desc" },
     });
@@ -166,26 +172,63 @@ export class ProbeStrategyService {
 
     const [h1Records, m15Records] = await Promise.all([
       this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "H1", source, openTime: { lte: candleTime } }, orderBy: { openTime: "desc" }, take: config.emaSlowPeriod + 20 }),
-      this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M15", source, openTime: { lt: candleTime } }, orderBy: { openTime: "desc" }, take: Math.max(config.breakoutPeriod, config.atrPeriod + 1) + 5 }),
+      this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M15", source, openTime: { lt: candleTime } }, orderBy: { openTime: "desc" }, take: Math.max(config.breakoutPeriod, config.atrPeriod + 1, 25) + 5 }),
     ]);
     const h1 = h1Records.reverse().map((item) => this.toValue(item));
     const previousM15 = m15Records.reverse().map((item) => this.toValue(item));
-    if (h1.length < config.emaSlowPeriod || previousM15.length < Math.max(config.breakoutPeriod, config.atrPeriod + 1)) return;
-    const fast = ema(h1.map((item) => item.close), config.emaFastPeriod);
-    const slow = ema(h1.map((item) => item.close), config.emaSlowPeriod);
+    if (h1.length < config.emaSlowPeriod + 3 || previousM15.length < Math.max(config.breakoutPeriod, config.atrPeriod + 1)) return;
+    const regimeResult = detectMarketRegime(h1, config.emaFastPeriod, config.emaSlowPeriod, config.atrPeriod,
+      Number(config.minEmaSeparationAtr), Number(config.minEmaSlopeAtr));
     const currentAtr = atr(previousM15, config.atrPeriod);
-    if (current.high - current.low > 2.5 * currentAtr) return;
 
     const buyLevel = breakoutLevel(previousM15, config.breakoutPeriod, "BUY");
     const sellLevel = breakoutLevel(previousM15, config.breakoutPeriod, "SELL");
-    const direction = fast > slow && current.close > buyLevel
+    const direction = regimeResult.emaFast > regimeResult.emaSlow && current.close > buyLevel
       ? "BUY"
-      : fast < slow && current.close < sellLevel ? "SELL" : null;
+      : regimeResult.emaFast < regimeResult.emaSlow && current.close < sellLevel ? "SELL" : null;
     if (!direction) return;
     const level = direction === "BUY" ? buyLevel : sellLevel;
     const riskDistance = currentAtr * Number(config.stopAtrMultiplier);
     const stop = current.close + (direction === "BUY" ? -riskDistance : riskDistance);
     const target = current.close + (direction === "BUY" ? riskDistance : -riskDistance) * Number(config.takeProfitR);
+    const labelExpiresAt = new Date(candleTime.getTime() + config.candidateLabelHorizonBars * 15 * 60_000);
+    const quality = assessBreakoutQuality({
+      candle: current, direction, level, atr: currentAtr,
+      previousTickVolumes: previousM15.flatMap((candle) => candle.tickVolume === undefined ? [] : [candle.tickVolume]),
+      minBodyRatio: Number(config.minBreakoutBodyRatio),
+      minCloseBeyondAtr: Number(config.minBreakoutCloseAtr),
+      maxOppositeWickRatio: Number(config.maxOppositeWickRatio),
+      maxRangeAtr: Number(config.maxBreakoutRangeAtr),
+      minTickVolumeRatio: Number(config.minTickVolumeRatio),
+    });
+    const regime = quality.reasons.includes("HIGH_VOL_BREAKOUT") ? "HIGH_VOL" : regimeResult.regime;
+    const reasons = [...quality.reasons];
+    const expectedRegime = direction === "BUY" ? "TREND_UP" : "TREND_DOWN";
+    if (config.regimeFilterEnabled && regime !== expectedRegime && regime !== "HIGH_VOL") reasons.push("REGIME_MISMATCH");
+    if (current.spreadPoints !== undefined && config.maxSpreadPoints > 0 && current.spreadPoints > config.maxSpreadPoints) {
+      reasons.push("SPREAD_TOO_WIDE");
+    }
+    const newsEvent = source.startsWith("DEMO_") || !config.newsGuardEnabled
+      ? null
+      : await this.findBlockingNews(candleTime, config.newsGuardBeforeMinutes, config.newsGuardAfterMinutes);
+    if (newsEvent) reasons.push("HIGH_IMPACT_USD_NEWS");
+    const features: Prisma.InputJsonObject = {
+      strategyVersion: "2.1", atr: currentAtr, h1Atr: regimeResult.atr,
+      emaFast: regimeResult.emaFast, emaSlow: regimeResult.emaSlow,
+      emaSeparationAtr: regimeResult.separationAtr, emaSlopeAtr: regimeResult.slopeAtr,
+      breakoutLevel: level, breakoutRangeAtr: quality.rangeAtr, bodyRatio: quality.bodyRatio,
+      oppositeWickRatio: quality.oppositeWickRatio, closeBeyondAtr: quality.closeBeyondAtr,
+      tickVolume: current.tickVolume ?? null, tickVolumeRatio: quality.tickVolumeRatio ?? null,
+      spreadPoints: current.spreadPoints ?? null, newsEventId: newsEvent?.id ?? null,
+      newsTitle: newsEvent?.title ?? null,
+    };
+    if (reasons.length > 0) {
+      await this.recordCandidate(config.id, config.symbol, source, candleTime, direction, regime, "SKIP", reasons,
+        features, current.close, stop, target, labelExpiresAt);
+      return;
+    }
+    await this.recordCandidate(config.id, config.symbol, source, candleTime, direction, regime, "EXECUTE", ["ACCEPTED"],
+      features, current.close, stop, target, labelExpiresAt);
     const position = await this.prisma.strategyPosition.create({
       data: {
         userId: config.userId,
@@ -207,6 +250,51 @@ export class ProbeStrategyService {
       await this.scheduleMt5Leg(position.id, config.userId, config.accountId, direction, current.close, stop, target, point, "PROBE");
     } else if (config.executionVenue === "CBOT" && config.cbotInstanceId) {
       await this.scheduleCbotLeg(position.id, config.userId, config.cbotInstanceId, direction, current.close, stop, target, point, "PROBE");
+    }
+  }
+
+  private findBlockingNews(candleTime: Date, beforeMinutes: number, afterMinutes: number) {
+    const signalTime = new Date(candleTime.getTime() + 15 * 60_000);
+    return this.prisma.economicEvent.findFirst({
+      where: {
+        currency: "USD", importance: "HIGH",
+        scheduledAt: {
+          gte: new Date(signalTime.getTime() - afterMinutes * 60_000),
+          lte: new Date(signalTime.getTime() + beforeMinutes * 60_000),
+        },
+      },
+      orderBy: { scheduledAt: "asc" },
+      select: { id: true, title: true, scheduledAt: true },
+    });
+  }
+
+  private async recordCandidate(configId: string, symbol: string, source: string, candleTime: Date,
+    direction: "BUY" | "SELL", regime: string, decision: "EXECUTE" | "SKIP", reasons: string[],
+    features: Prisma.InputJsonObject, entryPrice: number, stopLossPrice: number, takeProfitPrice: number,
+    labelExpiresAt: Date): Promise<void> {
+    await this.prisma.strategyCandidate.upsert({
+      where: { strategyConfigId_source_candleTime: { strategyConfigId: configId, source, candleTime } },
+      create: { strategyConfigId: configId, symbol, source, candleTime, direction, regime, decision,
+        reason: reasons.join(","), features, entryPrice, stopLossPrice, takeProfitPrice, labelExpiresAt },
+      update: { direction, regime, decision, reason: reasons.join(","), features,
+        entryPrice, stopLossPrice, takeProfitPrice, labelExpiresAt },
+    });
+  }
+
+  private async settleCandidates(configId: string, source: string, candle: CandleValue): Promise<void> {
+    const candidates = await this.prisma.strategyCandidate.findMany({
+      where: { strategyConfigId: configId, source, outcome: null, candleTime: { lt: candle.openTime } },
+      orderBy: { candleTime: "asc" }, take: 100,
+    });
+    for (const candidate of candidates) {
+      const outcome = resolveBarrierOutcome({
+        direction: candidate.direction, stopLoss: Number(candidate.stopLossPrice),
+        takeProfit: Number(candidate.takeProfitPrice), candle,
+      }) ?? (candle.openTime >= candidate.labelExpiresAt ? "TIMEOUT" : undefined);
+      if (!outcome) continue;
+      await this.prisma.strategyCandidate.updateMany({
+        where: { id: candidate.id, outcome: null }, data: { outcome, resolvedAt: candle.openTime },
+      });
     }
   }
 
@@ -332,14 +420,22 @@ export class ProbeStrategyService {
     });
   }
 
-  private toValue(value: { openTime: Date; open: Prisma.Decimal; high: Prisma.Decimal; low: Prisma.Decimal; close: Prisma.Decimal; spreadPoints: number }): CandleValue {
-    return { openTime: value.openTime, open: Number(value.open), high: Number(value.high), low: Number(value.low), close: Number(value.close), spreadPoints: value.spreadPoints };
+  private toValue(value: { openTime: Date; open: Prisma.Decimal; high: Prisma.Decimal; low: Prisma.Decimal; close: Prisma.Decimal; spreadPoints: number | null; tickVolume: Prisma.Decimal | null }): CandleValue {
+    return { openTime: value.openTime, open: Number(value.open), high: Number(value.high), low: Number(value.low),
+      close: Number(value.close), spreadPoints: value.spreadPoints ?? undefined,
+      tickVolume: value.tickVolume === null ? undefined : Number(value.tickVolume) };
   }
 
   private validateCandle(input: CandleInput): void {
     if (![input.open, input.high, input.low, input.close].every(Number.isFinite)) throw new BadRequestException("Invalid candle price");
     if (input.low > Math.min(input.open, input.close) || input.high < Math.max(input.open, input.close) || input.low > input.high) {
       throw new BadRequestException("Invalid OHLC relationship");
+    }
+    if (input.spreadPoints !== undefined && (!Number.isInteger(input.spreadPoints) || input.spreadPoints < 0)) {
+      throw new BadRequestException("Invalid spread points");
+    }
+    if (input.tickVolume !== undefined && (!Number.isFinite(input.tickVolume) || input.tickVolume < 0)) {
+      throw new BadRequestException("Invalid tick volume");
     }
   }
 }

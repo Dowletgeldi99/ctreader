@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsDateString, IsIn, IsNumber, IsOptional, IsString, ValidateNested } from "class-validator";
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, Min, ValidateNested } from "class-validator";
 
 export class CbotCandleDto {
   @IsString() symbol!: string;
@@ -11,6 +11,8 @@ export class CbotCandleDto {
   @IsNumber() close!: number;
   @IsOptional() @IsNumber() spreadPoints?: number;
   @IsOptional() @IsNumber() point?: number;
+  @IsOptional() @IsNumber() @Min(0) tickVolume?: number;
+  @IsOptional() @IsBoolean() isHistorical?: boolean;
 }
 
 export class CbotCandleBatchDto {

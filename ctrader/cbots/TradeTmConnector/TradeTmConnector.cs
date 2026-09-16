@@ -35,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.3.0";
+        private const string Version = "1.4.0";
         private const int PendingPlacementLeadSeconds = 3;
         private const int MaxReversalPlacementAttempts = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
@@ -200,7 +200,7 @@ namespace cAlgo.Robots
             {
                 var history = new List<CandleDto>();
                 AppendClosedBars(history, _h1Bars, "H1", 220, ref _lastH1Candle);
-                AppendClosedBars(history, _m15Bars, "M15", 30, ref _lastM15Candle);
+                AppendClosedBars(history, _m15Bars, "M15", 50, ref _lastM15Candle);
                 if (history.Count > 0) SendWs("CANDLE_BATCH", new { candles = history }, true);
                 _strategyHistorySent = true;
                 Print("Strategy V2 history sent: {0} closed candles", history.Count);
@@ -217,7 +217,7 @@ namespace cAlgo.Robots
         {
             var count = Math.Min(requested, Math.Max(0, bars.Count - 1));
             for (var offset = count; offset >= 1; offset--)
-                target.Add(ToCandle(bars, timeframe, offset));
+                target.Add(ToCandle(bars, timeframe, offset, true));
             if (count > 0) latest = bars.OpenTimes.Last(1);
         }
 
@@ -226,17 +226,18 @@ namespace cAlgo.Robots
             if (bars.Count < 2) return;
             var openTime = bars.OpenTimes.Last(1);
             if (openTime <= latest) return;
-            target.Add(ToCandle(bars, timeframe, 1));
+            target.Add(ToCandle(bars, timeframe, 1, false));
             latest = openTime;
         }
 
-        private CandleDto ToCandle(Bars bars, string timeframe, int offset)
+        private CandleDto ToCandle(Bars bars, string timeframe, int offset, bool isHistorical)
         {
             return new CandleDto
             {
                 Symbol = SymbolName, Timeframe = timeframe, OpenTime = bars.OpenTimes.Last(offset).ToUniversalTime().ToString("O"),
                 Open = bars.OpenPrices.Last(offset), High = bars.HighPrices.Last(offset), Low = bars.LowPrices.Last(offset),
-                Close = bars.ClosePrices.Last(offset), SpreadPoints = SpreadPoints(), Point = Symbol.TickSize
+                Close = bars.ClosePrices.Last(offset), SpreadPoints = isHistorical ? (int?)null : SpreadPoints(),
+                Point = Symbol.TickSize, TickVolume = bars.TickVolumes.Last(offset), IsHistorical = isHistorical
             };
         }
 
@@ -866,8 +867,10 @@ namespace cAlgo.Robots
             public double High { get; set; }
             public double Low { get; set; }
             public double Close { get; set; }
-            public int SpreadPoints { get; set; }
+            public int? SpreadPoints { get; set; }
             public double Point { get; set; }
+            public double TickVolume { get; set; }
+            public bool IsHistorical { get; set; }
         }
         private sealed class ReportRequest
         {

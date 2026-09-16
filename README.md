@@ -216,18 +216,21 @@ Restart the backend, run `/connect_ctrader` to create an isolated mock demo acco
 
 Mock mode never connects to cTrader or a broker and never sends a real order. Disable it after Open API approval.
 
-## Strategy V2: Probe Entry
+## Strategy V2.1: Probe Entry
 
 The first non-news strategy is implemented for `XAUUSD` as a connector-independent state machine:
 
-- H1 trend regime: EMA 50 versus EMA 200;
+- H1 trend regime: EMA 50/200 separation and slope normalised by ATR;
 - M15 breakout of the previous 20 completed candles;
-- ATR 14 volatility and abnormal-candle filter;
+- breakout body, rejection wick, close distance, tick-volume and abnormal-volatility filters;
+- configurable blackout around high-importance USD economic events;
+- an auditable `EXECUTE`/`SKIP` candidate record with model-ready feature snapshots;
 - one probe entry risking 0.10%;
 - remaining 0.30% is added only after a held retest or 0.5 ATR favourable movement;
 - 1.2 ATR stop, 3R target, three-bar confirmation deadline and four-bar cooldown;
 - no averaging down, grid or martingale;
-- spread limit and one active position per strategy configuration.
+- spread limit and one active position per strategy configuration;
+- startup history warms indicators but cannot create a trade, and historical spread is not fabricated.
 
 Telegram commands:
 
@@ -236,7 +239,7 @@ Telegram commands:
 /strategy_demo  generate a deterministic mock trend, breakout, retest and TP scenario
 ```
 
-For external candle ingestion, send an authenticated `POST /api/v1/strategy-v2/candles` request with `x-admin-api-key`. This currently creates simulated strategy positions only. A real cTrader order adapter, broker symbol metadata and historical/forward validation are required before live trading.
+For external candle ingestion, send an authenticated `POST /api/v1/strategy-v2/candles` request with `x-admin-api-key`. cBot Cloud and MT5 demo execution use the existing job adapters. Historical/forward validation and risk-sized PROBE/MAIN volumes are still required before live trading.
 
 ### Strategy V2 on an MT5 demo account
 

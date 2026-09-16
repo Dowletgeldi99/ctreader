@@ -81,7 +81,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.webhookSecret = config.get<string>("TELEGRAM_WEBHOOK_SECRET");
     const configuredCbotUrl = config.get<string>("CBOT_INSTALL_URL");
     this.cbotInstallUrl = configuredCbotUrl || (this.publicBaseUrl
-      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.3.0`
+      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.4.0`
       : undefined);
     this.adminTelegramIds = new Set((config.get<string>("TELEGRAM_ADMIN_IDS") ?? "")
       .split(",").map((value) => value.trim()).filter(Boolean));
@@ -1103,11 +1103,16 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       ).row();
     }
     const active = configs.flatMap((config) => config.positions).find((position) => ["PROBE_OPEN", "MAIN_ADDED"].includes(position.state));
+    const latestCandidate = configs.flatMap((config) => config.candidates)
+      .sort((left, right) => right.candleTime.getTime() - left.candleTime.getTime())[0];
     await ctx.reply([
-      "Strategy V2 · XAUUSD",
-      "H1 EMA 50/200 · M15 breakout 20 · ATR 14",
+      "Strategy V2.1 · XAUUSD",
+      "H1 EMA 50/200 · M15 breakout 20 · ATR 14 · regime/quality/news guard",
       "Probe risk 0.10% · Main risk 0.30% · TP 3R",
       `Активная позиция: ${active ? `${active.direction} ${active.state}` : "нет"}`,
+      `Последний кандидат: ${latestCandidate
+        ? `${latestCandidate.direction} ${latestCandidate.decision} · ${latestCandidate.regime} · ${latestCandidate.reason}`
+        : "нет"}`,
       "MT5/cBot Cloud исполняют только на DEMO фиксированными 0.01 + 0.01 lot.",
     ].join("\n"), { reply_markup: keyboard });
   }

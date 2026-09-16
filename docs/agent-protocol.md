@@ -89,7 +89,11 @@ The EA does not submit an order when:
 
 ## Strategy V2 candle feed
 
-When `InpEnableStrategyV2=true`, the EA sends only completed XAUUSD candles. On startup it sends 220 H1 and 40 M15 candles; afterwards it sends a batch only when a new H1 or M15 candle closes. Broker-server candle timestamps are converted to UTC.
+Strategy V2.1 also accepts optional `tickVolume` and `isHistorical` fields.
+Historical candles are stored for indicator warm-up but never trigger an entry.
+Historical spread must be omitted unless it was measured at that candle close.
+
+When `InpEnableStrategyV2=true`, the EA sends only completed XAUUSD candles. On startup it sends 220 H1 and 50 M15 candles; afterwards it sends a batch only when a new H1 or M15 candle closes. Broker-server candle timestamps are converted to UTC.
 
 ```json
 {
@@ -102,7 +106,9 @@ When `InpEnableStrategyV2=true`, the EA sends only completed XAUUSD candles. On 
     "low": 2499.8,
     "close": 2500.9,
     "spreadPoints": 25,
-    "point": 0.01
+    "point": 0.01,
+    "tickVolume": 1842,
+    "isHistorical": false
   }]
 }
 ```

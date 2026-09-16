@@ -38,6 +38,8 @@ export class AgentsController {
       close: number;
       spreadPoints?: number;
       point?: number;
+      tickVolume?: number;
+      isHistorical?: boolean;
     },
   ) {
     await this.probeStrategy.ingestFromMt5(request.agent, { ...body, openTime: new Date(body.openTime) });
@@ -47,7 +49,7 @@ export class AgentsController {
   @Post("strategy-v2/candles/batch")
   async ingestStrategyCandles(
     @Req() request: AgentRequest,
-    @Body() body: { candles: Array<{ symbol: string; timeframe: "M15" | "H1"; openTime: string; open: number; high: number; low: number; close: number; spreadPoints?: number; point?: number }> },
+    @Body() body: { candles: Array<{ symbol: string; timeframe: "M15" | "H1"; openTime: string; open: number; high: number; low: number; close: number; spreadPoints?: number; point?: number; tickVolume?: number; isHistorical?: boolean }> },
   ) {
     if (!Array.isArray(body.candles) || body.candles.length > 300) return { accepted: false };
     let lastM15Index = -1;
