@@ -212,7 +212,8 @@ export class CbotService {
       const snapshot = job.settingsSnapshot as Prisma.JsonObject;
       const positionId = typeof snapshot.strategyPositionId === "string" ? snapshot.strategyPositionId : undefined;
       const leg = snapshot.leg;
-      if (["PROBE_ENTRY_V2", "PROBE_ENTRY_V3"].includes(String(snapshot.strategy)) && leg === "PROBE" && positionId) {
+      if (["PROBE_ENTRY_V2", "PROBE_ENTRY_V3", "PROBE_ENTRY_V4"].includes(String(snapshot.strategy))
+        && leg === "PROBE" && positionId) {
         await this.prisma.strategyPosition.updateMany({
           where: { id: positionId, state: "PROBE_OPEN" },
           data: { state: "CLOSED_TIMEOUT", closedAt: occurredAt, closeReason: `cBot rejected probe: ${dto.message ?? dto.phase}` },

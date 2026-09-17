@@ -29,6 +29,53 @@ export interface BreakoutQualityResult {
   tickVolumeRatio?: number;
 }
 
+export function directionalEfficiency(candles: CandleValue[]): number {
+  if (candles.length < 2) throw new Error("Directional efficiency requires at least two candles");
+  const net = Math.abs(candles.at(-1)!.close - candles[0].close);
+  const travelled = candles.slice(1).reduce((sum, candle, index) =>
+    sum + Math.abs(candle.close - candles[index].close), 0);
+  return travelled === 0 ? 0 : net / travelled;
+}
+
+export function detectWaveTrigger(input: {
+  bias: "BUY" | "SELL";
+  previous: CandleValue[];
+  current: CandleValue;
+  lookback: number;
+}): { direction: "BUY" | "SELL"; trigger: "WAVE_BREAKOUT"; level: number } | undefined {
+  if (input.previous.length < input.lookback) return undefined;
+  const level = breakoutLevel(input.previous, input.lookback, input.bias);
+  const previousClose = input.previous.at(-1)!.close;
+  const crossed = input.bias === "BUY"
+    ? previousClose <= level && input.current.close > level
+    : previousClose >= level && input.current.close < level;
+  return crossed ? { direction: input.bias, trigger: "WAVE_BREAKOUT", level } : undefined;
+}
+
+export function waveStop(input: {
+  direction: "BUY" | "SELL";
+  previous: CandleValue[];
+  current: CandleValue;
+  atr: number;
+  swingBars?: number;
+  bufferAtr?: number;
+  minDistanceAtr?: number;
+  maxDistanceAtr?: number;
+}): { stop: number; distance: number; distanceAtr: number; valid: boolean } {
+  const swingBars = input.swingBars ?? 5;
+  const buffer = (input.bufferAtr ?? 0.15) * input.atr;
+  const recent = [...input.previous.slice(-swingBars), input.current];
+  const structuralStop = input.direction === "BUY"
+    ? Math.min(...recent.map((candle) => candle.low)) - buffer
+    : Math.max(...recent.map((candle) => candle.high)) + buffer;
+  const rawDistance = Math.abs(input.current.close - structuralStop);
+  const minimumDistance = (input.minDistanceAtr ?? 1) * input.atr;
+  const distance = Math.max(rawDistance, minimumDistance);
+  const stop = input.current.close + (input.direction === "BUY" ? -distance : distance);
+  const distanceAtr = distance / input.atr;
+  return { stop, distance, distanceAtr, valid: distanceAtr <= (input.maxDistanceAtr ?? 2.5) };
+}
+
 export function detectM5Trigger(input: {
   bias: "BUY" | "SELL";
   previous: CandleValue;
@@ -144,6 +191,7 @@ export function assessBreakoutQuality(input: {
   atr: number;
   previousTickVolumes: number[];
   minBodyRatio: number;
+  minRangeAtr?: number;
   minCloseBeyondAtr: number;
   maxOppositeWickRatio: number;
   maxRangeAtr: number;
@@ -173,6 +221,7 @@ export function assessBreakoutQuality(input: {
   if (bodyRatio < input.minBodyRatio) reasons.push("WEAK_BODY");
   if (oppositeWickRatio > input.maxOppositeWickRatio) reasons.push("LARGE_REJECTION_WICK");
   if (closeBeyondAtr < input.minCloseBeyondAtr) reasons.push("WEAK_CLOSE_BEYOND_LEVEL");
+  if (rangeAtr < (input.minRangeAtr ?? 0)) reasons.push("LOW_VOL_BREAKOUT");
   if (rangeAtr > input.maxRangeAtr) reasons.push("HIGH_VOL_BREAKOUT");
   if (tickVolumeRatio !== undefined && tickVolumeRatio < input.minTickVolumeRatio) reasons.push("LOW_TICK_VOLUME");
   return { accepted: reasons.length === 0, reasons, rangeAtr, bodyRatio, oppositeWickRatio,

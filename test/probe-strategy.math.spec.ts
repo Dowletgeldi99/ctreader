@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectM5Trigger, detectMarketRegime, ema, resolveBarrierOutcome } from "../src/strategy-v2/probe-strategy.math";
+import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectM5Trigger, detectMarketRegime,
+  detectWaveTrigger, directionalEfficiency, ema, resolveBarrierOutcome, waveStop } from "../src/strategy-v2/probe-strategy.math";
 
 function candles(closes: number[]): CandleValue[] {
   return closes.map((close, index) => ({
@@ -12,7 +13,7 @@ function candles(closes: number[]): CandleValue[] {
   }));
 }
 
-describe("Strategy V3 math", () => {
+describe("Strategy wave math", () => {
   it("detects an upward EMA regime", () => {
     const closes = Array.from({ length: 220 }, (_, index) => 2_000 + index);
     expect(ema(closes, 50)).toBeGreaterThan(ema(closes, 200));
@@ -93,5 +94,35 @@ describe("Strategy V3 math", () => {
       previous: { openTime: new Date(0), open: 100, high: 100.1, low: 99.4, close: 99.6 },
       current: { openTime: new Date(1), open: 99.8, high: 100.1, low: 99.2, close: 99.4 } });
     expect(result).toEqual({ direction: "SELL", trigger: "RETEST", level: 100 });
+  });
+
+  it("detects a six-bar wave breakout", () => {
+    const previous = candles([100, 100.2, 100.1, 100.3, 100.4, 100.5]);
+    const level = Math.max(...previous.map((candle) => candle.high));
+    const result = detectWaveTrigger({ bias: "BUY", previous, lookback: 6,
+      current: { openTime: new Date(), open: level - 0.2, high: level + 0.5, low: level - 0.3,
+        close: level + 0.3 } });
+    expect(result).toEqual({ direction: "BUY", trigger: "WAVE_BREAKOUT", level });
+  });
+
+  it("distinguishes directional movement from chop", () => {
+    expect(directionalEfficiency(candles([100, 101, 102, 103, 104]))).toBe(1);
+    expect(directionalEfficiency(candles([100, 101, 100, 101, 100]))).toBe(0);
+  });
+
+  it("uses a structural wave stop and rejects excessive distance", () => {
+    const previous = candles([100, 101, 102, 103, 104]);
+    const result = waveStop({ direction: "BUY", previous, atr: 1,
+      current: { openTime: new Date(), open: 104, high: 105.2, low: 103.8, close: 105 } });
+    expect(result.distanceAtr).toBeGreaterThan(2.5);
+    expect(result.valid).toBe(false);
+  });
+
+  it("enforces the configured minimum ATR stop distance", () => {
+    const previous = candles([100, 100.1, 100.2, 100.3, 100.4]);
+    const result = waveStop({ direction: "BUY", previous, atr: 2, minDistanceAtr: 1.3,
+      current: { openTime: new Date(), open: 100.4, high: 100.7, low: 100.3, close: 100.6 } });
+    expect(result.distance).toBeCloseTo(2.6);
+    expect(result.distanceAtr).toBeCloseTo(1.3);
   });
 });

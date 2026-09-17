@@ -112,8 +112,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       { command: "jobs", description: "Активные задания" },
       { command: "close_all", description: "Закрыть все cTrader-задания" },
       { command: "mock_results", description: "Результаты cTrader mock" },
-      { command: "strategy_v3", description: "H1/M15/M5 стратегия" },
-      { command: "strategy_demo", description: "Запустить тестовый сценарий V3" },
+      { command: "strategy_v4", description: "M15/M5 Wave Rider" },
       { command: "status", description: "Проверить MT5 и счета" },
       { command: "settings", description: "Показать настройки риска" },
       { command: "multi_settings", description: "Шаблон MULTI trades" },
@@ -667,9 +666,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       await this.sendActiveJobs(ctx);
     });
     bot.command("mock_results", async (ctx) => this.sendMockResults(ctx));
+    bot.command("strategy_v4", async (ctx) => this.sendStrategyV2(ctx));
     bot.command("strategy_v3", async (ctx) => this.sendStrategyV2(ctx));
     bot.command("strategy_v2", async (ctx) => this.sendStrategyV2(ctx));
-    bot.command("strategy_demo", async (ctx) => this.runStrategyDemo(ctx));
     bot.callbackQuery(/^strategy_v2:(on|off):(MT5|CTRADER|CBOT):(.+)$/, async (ctx) => {
       await ctx.answerCallbackQuery();
       const user = await this.users.findByTelegramId(BigInt(ctx.from.id));
@@ -682,7 +681,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         } else {
           await this.probeStrategy.enableForUser(user.id, ctx.match[3], ctx.match[1] === "on");
         }
-        await ctx.reply(`Strategy V3: ${ctx.match[1] === "on" ? "ON" : "OFF"}`);
+        await ctx.reply(`Strategy V4: ${ctx.match[1] === "on" ? "ON" : "OFF"}`);
       } catch (error) {
         await ctx.reply(this.errorMessage(error));
       }
@@ -1071,11 +1070,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
     const cbotAccounts = user.cbotInstances.filter((account) => account.environment === "DEMO");
     if (cbotAccounts.length === 0) {
-      await ctx.reply("Для Strategy V3 подключите cBot Cloud к demo-счёту: стратегия требует поток H1/M15/M5.");
+      await ctx.reply("Для Strategy V4 подключите cBot Cloud к demo-счёту: стратегия требует поток H1/M15/M5.");
       return;
     }
     const configs = await this.probeStrategy.statusForUser(user.id);
     const feeds = await this.probeStrategy.feedStatusForUser(user.id);
+    const waveStatuses = await this.probeStrategy.waveStatusForUser(user.id);
     const keyboard = new InlineKeyboard();
     for (const account of cbotAccounts) {
       const config = configs.find((item) => item.cbotInstanceId === account.id);
@@ -1087,16 +1087,21 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const active = configs.flatMap((config) => config.positions).find((position) => ["PROBE_OPEN", "MAIN_ADDED"].includes(position.state));
     const latestCandidate = configs.flatMap((config) => config.candidates)
       .filter((candidate) => typeof candidate.features === "object" && candidate.features !== null
-        && !Array.isArray(candidate.features) && candidate.features.strategyVersion === "3.0")
+        && !Array.isArray(candidate.features) && candidate.features.strategyVersion === "4.0")
       .sort((left, right) => right.candleTime.getTime() - left.candleTime.getTime())[0];
     const feed = feeds.flatMap((item) => item.candles)
       .map((item) => `${item.timeframe}: ${item.openTime?.toISOString() ?? "нет"}`)
       .join(" · ");
+    const wave = waveStatuses[0];
+    const waveLine = wave?.ready
+      ? `${wave.state} · H1 ${wave.h1Regime} · M15 ${wave.m15Regime} · efficiency ${wave.efficiency.toFixed(2)} · price ${wave.close.toFixed(2)} · BUY>${wave.buyLevel.toFixed(2)} · SELL<${wave.sellLevel.toFixed(2)}`
+      : wave?.state ?? "нет данных";
     await ctx.reply([
-      "Strategy V3 · XAUUSD · DEMO",
-      "H1 EMA 20/50 · M15 structure 20 · M5 breakout/retest · ATR 14",
-      "HIGH_VOL разрешён при сильной M5; EXTREME_VOL блокируется · TP 3R",
+      "Strategy V4 · XAUUSD Wave Rider · DEMO",
+      "H1 strong-trend veto · M15 EMA 8/21 · M5 breakout 6 · ATR 14",
+      "M5 CHOP guard · structural SL 1.3–2.5 ATR · TP 2.5R · без дневного лимита",
       `Feed: ${feed || "нет данных"}`,
+      `Wave: ${waveLine}`,
       `Активная позиция: ${active ? `${active.direction} ${active.state}` : "нет"}`,
       `Последний кандидат: ${latestCandidate
         ? `${latestCandidate.direction} ${latestCandidate.decision} · ${latestCandidate.regime} · ${latestCandidate.reason}`
@@ -1110,12 +1115,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const user = await this.users.findByTelegramId(BigInt(ctx.from.id));
     if (!user) return;
     try {
-      await ctx.reply("Генерирую H1/M15/M5 mock-свечи и выполняю Probe Entry сценарий V3...");
+      await ctx.reply("Генерирую H1/M15/M5 mock-свечи и выполняю Wave Rider сценарий V4...");
       await this.probeStrategy.runMockDemo(user.id);
       const configs = await this.probeStrategy.statusForUser(user.id);
       const position = configs.flatMap((config) => config.positions)[0];
       if (!position) {
-        await ctx.reply("Сигнал не сформирован. Проверьте, что Strategy V3 включена.");
+        await ctx.reply("Сигнал не сформирован. Проверьте, что Strategy V4 включена.");
         return;
       }
       await ctx.reply([

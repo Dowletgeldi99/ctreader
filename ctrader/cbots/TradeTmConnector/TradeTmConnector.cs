@@ -209,7 +209,7 @@ namespace cAlgo.Robots
                 AppendClosedBars(m5History, _m5Bars, "M5", 300, ref _lastM5Candle);
                 if (m5History.Count > 0) SendWs("CANDLE_BATCH", new { candles = m5History }, true);
                 _strategyHistorySent = true;
-                Print("Strategy V3 history sent: H1/M15={0}, M5={1} closed candles", history.Count, m5History.Count);
+                Print("Strategy V4 history sent: H1/M15={0}, M5={1} closed candles", history.Count, m5History.Count);
                 return;
             }
             var updates = new List<CandleDto>();

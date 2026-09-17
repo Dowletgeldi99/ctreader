@@ -216,20 +216,20 @@ Restart the backend, run `/connect_ctrader` to create an isolated mock demo acco
 
 Mock mode never connects to cTrader or a broker and never sends a real order. Disable it after Open API approval.
 
-## Strategy V3: H1 context, M15 structure, M5 entry
+## Strategy V4: Wave Rider
 
 The first non-news strategy is implemented for `XAUUSD` as a connector-independent state machine:
 
-- H1 trend regime: EMA 20/50 separation and slope normalised by ATR;
-- structure levels from the previous 20 completed M15 candles;
-- fast breakout or held retest on a completed M5 candle;
-- M5 body, rejection wick, close distance, tick-volume and extreme-volatility filters;
-- high-volatility entries are allowed when the M5 candle remains high quality;
+- H1 EMA 20/50 is only a veto against an exceptionally strong opposite trend;
+- M15 EMA 8/21 defines the local wave direction while 12-bar M5 directional efficiency rejects chop;
+- a completed M5 candle must break the preceding six completed M5 candles;
+- M5 body, rejection wick, close distance, range and tick-volume filters validate the impulse;
 - configurable blackout around high-importance USD economic events;
 - an auditable `EXECUTE`/`SKIP` candidate record with model-ready feature snapshots;
 - one fixed `0.01 lot` demo PROBE entry;
 - one fixed `0.01 lot` demo MAIN is added only after a held retest or 0.5 M5 ATR favourable movement;
-- 1.2 M5 ATR stop, 3R target, three-M5-bar confirmation deadline and four-M5-bar cooldown;
+- structural stop behind the latest five M5 candles, constrained to 1.3–2.5 ATR, and a 2.5R target;
+- three-M5-bar confirmation deadline and one-M5-bar cooldown, with no daily trade cap;
 - no averaging down, grid or martingale;
 - spread limit and one active position per strategy configuration;
 - startup H1/M15/M5 history warms indicators but cannot create a trade, and historical spread is not fabricated.
@@ -237,12 +237,11 @@ The first non-news strategy is implemented for `XAUUSD` as a connector-independe
 Telegram commands:
 
 ```text
-/strategy_v3    configure and enable Strategy V3 for a cBot demo account
-/strategy_demo  generate a deterministic mock H1/M15/M5 scenario
+/strategy_v4    configure and enable Strategy V4 for a cBot demo account
 ```
 
 For external candle ingestion, send an authenticated `POST /api/v1/strategy-v2/candles` request with `x-admin-api-key`. cBot Cloud demo execution uses the existing job adapter. Historical/forward validation and risk-sized PROBE/MAIN volumes are still required before live trading.
 
 ### MT5 compatibility
 
-The current MT5 agent does not publish M5 candles and therefore does not execute Strategy V3. Use the cBot Cloud demo connector for V3. The MT5 news-trading modes remain unchanged.
+The current MT5 agent does not publish M5 candles and therefore does not execute Strategy V4. Use the cBot Cloud demo connector for V4. The MT5 news-trading modes remain unchanged.
