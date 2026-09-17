@@ -1087,18 +1087,18 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const active = configs.flatMap((config) => config.positions).find((position) => ["PROBE_OPEN", "MAIN_ADDED"].includes(position.state));
     const latestCandidate = configs.flatMap((config) => config.candidates)
       .filter((candidate) => typeof candidate.features === "object" && candidate.features !== null
-        && !Array.isArray(candidate.features) && candidate.features.strategyVersion === "4.0")
+        && !Array.isArray(candidate.features) && candidate.features.strategyVersion === "4.1")
       .sort((left, right) => right.candleTime.getTime() - left.candleTime.getTime())[0];
     const feed = feeds.flatMap((item) => item.candles)
       .map((item) => `${item.timeframe}: ${item.openTime?.toISOString() ?? "нет"}`)
       .join(" · ");
     const wave = waveStatuses[0];
     const waveLine = wave?.ready
-      ? `${wave.state} · H1 ${wave.h1Regime} · M15 ${wave.m15Regime} · efficiency ${wave.efficiency.toFixed(2)} · price ${wave.close.toFixed(2)} · BUY>${wave.buyLevel.toFixed(2)} · SELL<${wave.sellLevel.toFixed(2)}`
+      ? `${wave.state} · M15 ${wave.m15Regime} · efficiency ${wave.efficiency.toFixed(2)} · price ${wave.close.toFixed(2)} · BUY>${wave.buyLevel.toFixed(2)} · SELL<${wave.sellLevel.toFixed(2)}`
       : wave?.state ?? "нет данных";
     await ctx.reply([
-      "Strategy V4 · XAUUSD Wave Rider · DEMO",
-      "H1 strong-trend veto · M15 EMA 8/21 · M5 breakout 6 · ATR 14",
+      "Strategy V4.1 · XAUUSD Wave Rider · DEMO",
+      "M15 EMA 8/21 · M5 breakout 6 · ATR 14 · H1 не блокирует входы",
       "M5 CHOP guard · structural SL 1.3–2.5 ATR · TP 2.5R · без дневного лимита",
       `Feed: ${feed || "нет данных"}`,
       `Wave: ${waveLine}`,

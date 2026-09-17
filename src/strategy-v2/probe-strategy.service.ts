@@ -103,22 +103,18 @@ export class ProbeStrategyService {
     });
     return Promise.all(configs.map(async (config) => {
       const source = `CBOT:${config.cbotInstanceId}`;
-      const [h1Records, m15Records, m5Records] = await Promise.all([
-        this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "H1", source },
-          orderBy: { openTime: "desc" }, take: 70 }),
+      const [m15Records, m5Records] = await Promise.all([
         this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M15", source },
           orderBy: { openTime: "desc" }, take: 40 }),
         this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M5", source },
           orderBy: { openTime: "desc" }, take: 40 }),
       ]);
-      const h1 = h1Records.reverse().map((item) => this.toValue(item));
       const m15 = m15Records.reverse().map((item) => this.toValue(item));
       const m5 = m5Records.reverse().map((item) => this.toValue(item));
-      if (h1.length < 53 || m15.length < config.emaSlowPeriod + 3
-        || m5.length < Math.max(config.atrPeriod + 1, config.breakoutPeriod, 12)) {
+      if (m15.length < config.emaSlowPeriod + 3 || m5.length < Math.max(config.atrPeriod + 1,
+        config.breakoutPeriod, 12)) {
         return { configId: config.id, ready: false as const, state: "WARMUP" as const };
       }
-      const h1Regime = detectMarketRegime(h1, 20, 50, config.atrPeriod, 0.50, 0.05);
       const m15Regime = detectMarketRegime(m15, config.emaFastPeriod, config.emaSlowPeriod, config.atrPeriod,
         Number(config.minEmaSeparationAtr), Number(config.minEmaSlopeAtr));
       const efficiency = directionalEfficiency(m5.slice(-12));
@@ -127,7 +123,7 @@ export class ProbeStrategyService {
       const close = m5.at(-1)!.close;
       const state = m15Regime.regime === "RANGE" || efficiency < 0.25
         ? "CHOP" : m15Regime.regime === "TREND_UP" ? "ARMED_BUY" : "ARMED_SELL";
-      return { configId: config.id, ready: true as const, state, h1Regime: h1Regime.regime, m15Regime: m15Regime.regime,
+      return { configId: config.id, ready: true as const, state, m15Regime: m15Regime.regime,
         efficiency, close, buyLevel, sellLevel };
     }));
   }
@@ -237,19 +233,15 @@ export class ProbeStrategyService {
     });
     if (lastClosed?.closedAt && candleTime.getTime() < lastClosed.closedAt.getTime() + config.cooldownBars * 5 * 60_000) return;
 
-    const [h1Records, m15Records, m5Records] = await Promise.all([
-      this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "H1", source,
-        openTime: { lte: candleTime } }, orderBy: { openTime: "desc" }, take: 70 }),
+    const [m15Records, m5Records] = await Promise.all([
       this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M15", source,
         openTime: { lte: new Date(candleTime.getTime() - 15 * 60_000) } }, orderBy: { openTime: "desc" }, take: 40 }),
       this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M5", source, openTime: { lt: candleTime } }, orderBy: { openTime: "desc" }, take: Math.max(config.atrPeriod + 1, 30) + 5 }),
     ]);
-    const h1 = h1Records.reverse().map((item) => this.toValue(item));
     const previousM15 = m15Records.reverse().map((item) => this.toValue(item));
     const previousM5 = m5Records.reverse().map((item) => this.toValue(item));
-    if (h1.length < 53 || previousM15.length < config.emaSlowPeriod + 3
-      || previousM5.length < Math.max(config.atrPeriod + 1, config.breakoutPeriod, 12)) return;
-    const h1Regime = detectMarketRegime(h1, 20, 50, config.atrPeriod, 0.50, 0.05);
+    if (previousM15.length < config.emaSlowPeriod + 3 || previousM5.length < Math.max(config.atrPeriod + 1,
+      config.breakoutPeriod, 12)) return;
     const m15Regime = detectMarketRegime(previousM15, config.emaFastPeriod, config.emaSlowPeriod, config.atrPeriod,
       Number(config.minEmaSeparationAtr), Number(config.minEmaSlopeAtr));
     const currentAtr = atr(previousM5, config.atrPeriod);
@@ -278,8 +270,6 @@ export class ProbeStrategyService {
     const highVol = quality.rangeAtr >= 1.8;
     const regime = highVol ? "HIGH_VOL" : m15Regime.regime;
     const reasons = quality.reasons.map((reason) => reason === "HIGH_VOL_BREAKOUT" ? "EXTREME_VOLATILITY" : reason);
-    const h1Opposes = direction === "BUY" ? h1Regime.regime === "TREND_DOWN" : h1Regime.regime === "TREND_UP";
-    if (config.regimeFilterEnabled && h1Opposes) reasons.push("STRONG_H1_VETO");
     if (!stopResult.valid) reasons.push("STRUCTURAL_STOP_TOO_WIDE");
     if (current.spreadPoints !== undefined && config.maxSpreadPoints > 0 && current.spreadPoints > config.maxSpreadPoints) {
       reasons.push("SPREAD_TOO_WIDE");
@@ -289,9 +279,7 @@ export class ProbeStrategyService {
       : await this.findBlockingNews(candleTime, 5, config.newsGuardBeforeMinutes, config.newsGuardAfterMinutes);
     if (newsEvent) reasons.push("HIGH_IMPACT_USD_NEWS");
     const features: Prisma.InputJsonObject = {
-      strategyVersion: "4.0", trigger, atr: currentAtr, h1Atr: h1Regime.atr,
-      h1Regime: h1Regime.regime, h1EmaSeparationAtr: h1Regime.separationAtr,
-      h1EmaSlopeAtr: h1Regime.slopeAtr, m15Regime: m15Regime.regime,
+      strategyVersion: "4.1", trigger, atr: currentAtr, m15Regime: m15Regime.regime,
       emaFast: m15Regime.emaFast, emaSlow: m15Regime.emaSlow,
       emaSeparationAtr: m15Regime.separationAtr, emaSlopeAtr: m15Regime.slopeAtr,
       directionalEfficiency: m5Efficiency, stopDistanceAtr: stopResult.distanceAtr,
