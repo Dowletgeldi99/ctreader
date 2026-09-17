@@ -35,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.5.0";
+        private const string Version = "1.5.1";
         private const int PendingPlacementLeadSeconds = 3;
         private const int MaxReversalPlacementAttempts = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
@@ -526,11 +526,30 @@ namespace cAlgo.Robots
                 CancelWhere(runtime, o => o.TradeType != args.Position.TradeType);
             else if (j.ExecutionMode == "NEWS_REVERSAL" && args.PendingOrder.Label.Contains(":I:") && !runtime.ReversalPlaced)
             {
+                var triggerStopLoss = ResolveTriggerStopLoss(runtime, args.Position);
                 runtime.DeferredReversalTriggerType = args.Position.TradeType;
-                runtime.DeferredReversalTriggerStopLoss = args.Position.StopLoss;
+                runtime.DeferredReversalTriggerStopLoss = triggerStopLoss;
                 if (!runtime.InitialBasketPlacementInProgress)
-                    BeginReversal(runtime, args.Position.TradeType, args.Position.StopLoss);
+                    BeginReversal(runtime, args.Position.TradeType, triggerStopLoss);
             }
+        }
+
+        private double ResolveTriggerStopLoss(JobRuntime runtime, Position position)
+        {
+            if (position.StopLoss.HasValue)
+            {
+                runtime.ReversalUsedDerivedStop = false;
+                return position.StopLoss.Value;
+            }
+            // Some brokers publish PendingOrders.Filled before the relative protection is
+            // reflected on Position.StopLoss. Reconstruct the same broker-side SL from the
+            // actual fill so the reversal basket is not lost during this short race window.
+            runtime.ReversalUsedDerivedStop = true;
+            var distance = runtime.Job.StopLossPoints * Symbol.TickSize;
+            var derived = position.TradeType == TradeType.Buy
+                ? position.EntryPrice - distance
+                : position.EntryPrice + distance;
+            return Math.Round(derived, Symbol.Digits);
         }
 
         private void BeginReversal(JobRuntime runtime, TradeType triggerType, double? triggerStopLoss)
@@ -571,7 +590,10 @@ namespace cAlgo.Robots
             {
                 runtime.ReversalPlaced = true;
                 runtime.DeferredReversalTriggerStopLoss = null;
-                Report(runtime, "ACCEPTED", "Reversal basket accepted: 3/3 at initial SL plus gap");
+                Report(runtime, "ACCEPTED", "Reversal basket accepted: 3/3; trigger SL=" +
+                    triggerStopLoss.Value.ToString("F" + Symbol.Digits, CultureInfo.InvariantCulture) +
+                    "; source=" + (runtime.ReversalUsedDerivedStop ? "derived from fill while broker SL was pending" : "broker") +
+                    "; target=" + target.ToString("F" + Symbol.Digits, CultureInfo.InvariantCulture));
                 return;
             }
             RollbackLeg(runtime, "R");
@@ -842,6 +864,7 @@ namespace cAlgo.Robots
             public double ReversalTriggerStopLoss { get; set; }
             public TradeType DeferredReversalTriggerType { get; set; }
             public double? DeferredReversalTriggerStopLoss { get; set; }
+            public bool ReversalUsedDerivedStop { get; set; }
             public bool TerminalReported { get; set; }
             public double AnchorAsk { get; set; }
             public double AnchorBid { get; set; }
