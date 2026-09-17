@@ -29,6 +29,18 @@ export interface BreakoutQualityResult {
   tickVolumeRatio?: number;
 }
 
+const WAVE_OBSERVATION_ONLY_REASONS = new Set([
+  "LARGE_REJECTION_WICK",
+  "WEAK_CLOSE_BEYOND_LEVEL",
+  "LOW_TICK_VOLUME",
+]);
+
+export function hardWaveReasons(reasons: string[]): string[] {
+  return reasons
+    .filter((reason) => !WAVE_OBSERVATION_ONLY_REASONS.has(reason))
+    .map((reason) => reason === "HIGH_VOL_BREAKOUT" ? "EXTREME_VOLATILITY" : reason);
+}
+
 export function directionalEfficiency(candles: CandleValue[]): number {
   if (candles.length < 2) throw new Error("Directional efficiency requires at least two candles");
   const net = Math.abs(candles.at(-1)!.close - candles[0].close);

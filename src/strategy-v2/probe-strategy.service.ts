@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { Prisma } from "../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectMarketRegime, detectWaveTrigger,
-  directionalEfficiency, resolveBarrierOutcome, waveStop } from "./probe-strategy.math";
+  directionalEfficiency, hardWaveReasons, resolveBarrierOutcome, waveStop } from "./probe-strategy.math";
 import type { Agent } from "../generated/prisma/client";
 import { randomUUID } from "node:crypto";
 
@@ -121,8 +121,7 @@ export class ProbeStrategyService {
       const buyLevel = breakoutLevel(m5, config.breakoutPeriod, "BUY");
       const sellLevel = breakoutLevel(m5, config.breakoutPeriod, "SELL");
       const close = m5.at(-1)!.close;
-      const state = m15Regime.regime === "RANGE" || efficiency < 0.25
-        ? "CHOP" : m15Regime.regime === "TREND_UP" ? "ARMED_BUY" : "ARMED_SELL";
+      const state = m15Regime.emaFast >= m15Regime.emaSlow ? "ARMED_BUY" : "ARMED_SELL";
       return { configId: config.id, ready: true as const, state, m15Regime: m15Regime.regime,
         efficiency, close, buyLevel, sellLevel };
     }));
@@ -246,13 +245,12 @@ export class ProbeStrategyService {
       Number(config.minEmaSeparationAtr), Number(config.minEmaSlopeAtr));
     const currentAtr = atr(previousM5, config.atrPeriod);
     const m5Efficiency = directionalEfficiency(previousM5.slice(-12));
-    if (m15Regime.regime === "RANGE" || m5Efficiency < 0.25) return;
-    const bias = m15Regime.regime === "TREND_UP" ? "BUY" : "SELL";
+    const bias = m15Regime.emaFast >= m15Regime.emaSlow ? "BUY" : "SELL";
     const signal = detectWaveTrigger({ bias, previous: previousM5, current, lookback: config.breakoutPeriod });
     if (!signal) return;
     const { direction, level, trigger } = signal;
     const stopResult = waveStop({ direction, previous: previousM5, current, atr: currentAtr,
-      minDistanceAtr: Number(config.stopAtrMultiplier) });
+      minDistanceAtr: Number(config.stopAtrMultiplier), maxDistanceAtr: 3 });
     const stop = stopResult.stop;
     const target = current.close + (direction === "BUY" ? stopResult.distance : -stopResult.distance)
       * Number(config.takeProfitR);
@@ -261,7 +259,7 @@ export class ProbeStrategyService {
       candle: current, direction, level, atr: currentAtr,
       previousTickVolumes: previousM5.flatMap((candle) => candle.tickVolume === undefined ? [] : [candle.tickVolume]),
       minBodyRatio: Number(config.minBreakoutBodyRatio),
-      minRangeAtr: 0.60,
+      minRangeAtr: 0.30,
       minCloseBeyondAtr: Number(config.minBreakoutCloseAtr),
       maxOppositeWickRatio: Number(config.maxOppositeWickRatio),
       maxRangeAtr: Number(config.maxBreakoutRangeAtr),
@@ -269,7 +267,7 @@ export class ProbeStrategyService {
     });
     const highVol = quality.rangeAtr >= 1.8;
     const regime = highVol ? "HIGH_VOL" : m15Regime.regime;
-    const reasons = quality.reasons.map((reason) => reason === "HIGH_VOL_BREAKOUT" ? "EXTREME_VOLATILITY" : reason);
+    const reasons = hardWaveReasons(quality.reasons);
     if (!stopResult.valid) reasons.push("STRUCTURAL_STOP_TOO_WIDE");
     if (current.spreadPoints !== undefined && config.maxSpreadPoints > 0 && current.spreadPoints > config.maxSpreadPoints) {
       reasons.push("SPREAD_TOO_WIDE");
@@ -279,13 +277,14 @@ export class ProbeStrategyService {
       : await this.findBlockingNews(candleTime, 5, config.newsGuardBeforeMinutes, config.newsGuardAfterMinutes);
     if (newsEvent) reasons.push("HIGH_IMPACT_USD_NEWS");
     const features: Prisma.InputJsonObject = {
-      strategyVersion: "4.1", trigger, atr: currentAtr, m15Regime: m15Regime.regime,
+      strategyVersion: "4.2", trigger, atr: currentAtr, m15Regime: m15Regime.regime,
       emaFast: m15Regime.emaFast, emaSlow: m15Regime.emaSlow,
       emaSeparationAtr: m15Regime.separationAtr, emaSlopeAtr: m15Regime.slopeAtr,
       directionalEfficiency: m5Efficiency, stopDistanceAtr: stopResult.distanceAtr,
       breakoutLevel: level, breakoutRangeAtr: quality.rangeAtr, bodyRatio: quality.bodyRatio,
       oppositeWickRatio: quality.oppositeWickRatio, closeBeyondAtr: quality.closeBeyondAtr,
       tickVolume: current.tickVolume ?? null, tickVolumeRatio: quality.tickVolumeRatio ?? null,
+      observationOnly: quality.reasons.filter((reason) => !hardWaveReasons([reason]).length),
       spreadPoints: current.spreadPoints ?? null, newsEventId: newsEvent?.id ?? null,
       newsTitle: newsEvent?.title ?? null,
     };

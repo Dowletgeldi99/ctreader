@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectM5Trigger, detectMarketRegime,
-  detectWaveTrigger, directionalEfficiency, ema, resolveBarrierOutcome, waveStop } from "../src/strategy-v2/probe-strategy.math";
+  detectWaveTrigger, directionalEfficiency, ema, hardWaveReasons, resolveBarrierOutcome,
+  waveStop } from "../src/strategy-v2/probe-strategy.math";
 
 function candles(closes: number[]): CandleValue[] {
   return closes.map((close, index) => ({
@@ -124,5 +125,10 @@ describe("Strategy wave math", () => {
       current: { openTime: new Date(), open: 100.4, high: 100.7, low: 100.3, close: 100.6 } });
     expect(result.distance).toBeCloseTo(2.6);
     expect(result.distanceAtr).toBeCloseTo(1.3);
+  });
+
+  it("keeps wick, close depth and tick volume as observations instead of execution blockers", () => {
+    expect(hardWaveReasons(["LARGE_REJECTION_WICK", "WEAK_CLOSE_BEYOND_LEVEL", "LOW_TICK_VOLUME",
+      "WEAK_BODY", "HIGH_VOL_BREAKOUT"])).toEqual(["WEAK_BODY", "EXTREME_VOLATILITY"]);
   });
 });
