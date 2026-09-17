@@ -81,7 +81,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.webhookSecret = config.get<string>("TELEGRAM_WEBHOOK_SECRET");
     const configuredCbotUrl = config.get<string>("CBOT_INSTALL_URL");
     this.cbotInstallUrl = configuredCbotUrl || (this.publicBaseUrl
-      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.4.0`
+      ? `${this.publicBaseUrl.replace(/\/$/, "")}/api/v1/cbot/download?v=1.5.0`
       : undefined);
     this.adminTelegramIds = new Set((config.get<string>("TELEGRAM_ADMIN_IDS") ?? "")
       .split(",").map((value) => value.trim()).filter(Boolean));
@@ -112,8 +112,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       { command: "jobs", description: "Активные задания" },
       { command: "close_all", description: "Закрыть все cTrader-задания" },
       { command: "mock_results", description: "Результаты cTrader mock" },
-      { command: "strategy_v2", description: "Probe Entry стратегия" },
-      { command: "strategy_demo", description: "Запустить demo-сценарий V2" },
+      { command: "strategy_v3", description: "H1/M15/M5 стратегия" },
+      { command: "strategy_demo", description: "Запустить тестовый сценарий V3" },
       { command: "status", description: "Проверить MT5 и счета" },
       { command: "settings", description: "Показать настройки риска" },
       { command: "multi_settings", description: "Шаблон MULTI trades" },
@@ -667,6 +667,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       await this.sendActiveJobs(ctx);
     });
     bot.command("mock_results", async (ctx) => this.sendMockResults(ctx));
+    bot.command("strategy_v3", async (ctx) => this.sendStrategyV2(ctx));
     bot.command("strategy_v2", async (ctx) => this.sendStrategyV2(ctx));
     bot.command("strategy_demo", async (ctx) => this.runStrategyDemo(ctx));
     bot.callbackQuery(/^strategy_v2:(on|off):(MT5|CTRADER|CBOT):(.+)$/, async (ctx) => {
@@ -681,7 +682,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         } else {
           await this.probeStrategy.enableForUser(user.id, ctx.match[3], ctx.match[1] === "on");
         }
-        await ctx.reply(`Strategy V2: ${ctx.match[1] === "on" ? "ON" : "OFF"}`);
+        await ctx.reply(`Strategy V3: ${ctx.match[1] === "on" ? "ON" : "OFF"}`);
       } catch (error) {
         await ctx.reply(this.errorMessage(error));
       }
@@ -1068,33 +1069,14 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       await ctx.reply("Сначала выполните /start");
       return;
     }
-    const cTraderAccounts = await this.cTrader.listUserAccounts(user.id);
-    const mt5Accounts = user.accounts.filter((account) => account.environment === "DEMO");
     const cbotAccounts = user.cbotInstances.filter((account) => account.environment === "DEMO");
-    if (cTraderAccounts.length + mt5Accounts.length + cbotAccounts.length === 0) {
-      await ctx.reply("Сначала подключите demo-счёт MT5, cTrader или cBot Cloud.");
+    if (cbotAccounts.length === 0) {
+      await ctx.reply("Для Strategy V3 подключите cBot Cloud к demo-счёту: стратегия требует поток H1/M15/M5.");
       return;
     }
     const configs = await this.probeStrategy.statusForUser(user.id);
+    const feeds = await this.probeStrategy.feedStatusForUser(user.id);
     const keyboard = new InlineKeyboard();
-    for (const account of mt5Accounts) {
-      const config = configs.find((item) => item.accountId === account.id);
-      keyboard
-        .text(
-          `${config?.enabled ? "Выключить" : "Включить"} · MT5 ${account.login.toString()}`,
-          `strategy_v2:${config?.enabled ? "off" : "on"}:MT5:${account.id}`,
-        )
-        .row();
-    }
-    for (const account of cTraderAccounts) {
-      const config = configs.find((item) => item.cTraderAccountId === account.id);
-      keyboard
-        .text(
-          `${config?.enabled ? "Выключить" : "Включить"} · ${account.traderLogin?.toString() ?? "cTrader"}`,
-          `strategy_v2:${config?.enabled ? "off" : "on"}:CTRADER:${account.id}`,
-        )
-        .row();
-    }
     for (const account of cbotAccounts) {
       const config = configs.find((item) => item.cbotInstanceId === account.id);
       keyboard.text(
@@ -1104,16 +1086,22 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     }
     const active = configs.flatMap((config) => config.positions).find((position) => ["PROBE_OPEN", "MAIN_ADDED"].includes(position.state));
     const latestCandidate = configs.flatMap((config) => config.candidates)
+      .filter((candidate) => typeof candidate.features === "object" && candidate.features !== null
+        && !Array.isArray(candidate.features) && candidate.features.strategyVersion === "3.0")
       .sort((left, right) => right.candleTime.getTime() - left.candleTime.getTime())[0];
+    const feed = feeds.flatMap((item) => item.candles)
+      .map((item) => `${item.timeframe}: ${item.openTime?.toISOString() ?? "нет"}`)
+      .join(" · ");
     await ctx.reply([
-      "Strategy V2.1 · XAUUSD",
-      "H1 EMA 50/200 · M15 breakout 20 · ATR 14 · regime/quality/news guard",
-      "Probe risk 0.10% · Main risk 0.30% · TP 3R",
+      "Strategy V3 · XAUUSD · DEMO",
+      "H1 EMA 20/50 · M15 structure 20 · M5 breakout/retest · ATR 14",
+      "HIGH_VOL разрешён при сильной M5; EXTREME_VOL блокируется · TP 3R",
+      `Feed: ${feed || "нет данных"}`,
       `Активная позиция: ${active ? `${active.direction} ${active.state}` : "нет"}`,
       `Последний кандидат: ${latestCandidate
         ? `${latestCandidate.direction} ${latestCandidate.decision} · ${latestCandidate.regime} · ${latestCandidate.reason}`
         : "нет"}`,
-      "MT5/cBot Cloud исполняют только на DEMO фиксированными 0.01 + 0.01 lot.",
+      "cBot Cloud исполняет только на DEMO фиксированными 0.01 PROBE + 0.01 MAIN.",
     ].join("\n"), { reply_markup: keyboard });
   }
 
@@ -1122,12 +1110,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const user = await this.users.findByTelegramId(BigInt(ctx.from.id));
     if (!user) return;
     try {
-      await ctx.reply("Генерирую H1/M15 mock-свечи и выполняю Probe Entry сценарий...");
+      await ctx.reply("Генерирую H1/M15/M5 mock-свечи и выполняю Probe Entry сценарий V3...");
       await this.probeStrategy.runMockDemo(user.id);
       const configs = await this.probeStrategy.statusForUser(user.id);
       const position = configs.flatMap((config) => config.positions)[0];
       if (!position) {
-        await ctx.reply("Сигнал не сформирован. Проверьте, что Strategy V2 включена.");
+        await ctx.reply("Сигнал не сформирован. Проверьте, что Strategy V3 включена.");
         return;
       }
       await ctx.reply([

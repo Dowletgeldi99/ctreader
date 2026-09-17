@@ -102,6 +102,7 @@ enum MockExecutionOutcome {
 }
 
 enum StrategyTimeframe {
+  M5
   M15
   H1
 }
@@ -401,8 +402,8 @@ model StrategyConfig {
   enabled               Boolean         @default(false)
   probeRiskPercent      Decimal         @default(0.10) @db.Decimal(5, 2)
   mainRiskPercent       Decimal         @default(0.30) @db.Decimal(5, 2)
-  emaFastPeriod         Int             @default(50)
-  emaSlowPeriod         Int             @default(200)
+  emaFastPeriod         Int             @default(20)
+  emaSlowPeriod         Int             @default(50)
   breakoutPeriod        Int             @default(20)
   atrPeriod             Int             @default(14)
   stopAtrMultiplier     Decimal         @default(1.20) @db.Decimal(5, 2)
@@ -411,17 +412,17 @@ model StrategyConfig {
   confirmationBars      Int             @default(3)
   cooldownBars          Int             @default(4)
   regimeFilterEnabled   Boolean         @default(true)
-  minEmaSeparationAtr   Decimal         @default(0.15) @db.Decimal(6, 4)
-  minEmaSlopeAtr        Decimal         @default(0.01) @db.Decimal(6, 4)
+  minEmaSeparationAtr   Decimal         @default(0.10) @db.Decimal(6, 4)
+  minEmaSlopeAtr        Decimal         @default(0.005) @db.Decimal(6, 4)
   minBreakoutBodyRatio  Decimal         @default(0.55) @db.Decimal(6, 4)
-  minBreakoutCloseAtr   Decimal         @default(0.10) @db.Decimal(6, 4)
-  maxOppositeWickRatio  Decimal         @default(0.35) @db.Decimal(6, 4)
-  maxBreakoutRangeAtr   Decimal         @default(2.50) @db.Decimal(6, 4)
+  minBreakoutCloseAtr   Decimal         @default(0.05) @db.Decimal(6, 4)
+  maxOppositeWickRatio  Decimal         @default(0.40) @db.Decimal(6, 4)
+  maxBreakoutRangeAtr   Decimal         @default(5.00) @db.Decimal(6, 4)
   minTickVolumeRatio    Decimal         @default(0.80) @db.Decimal(6, 4)
   newsGuardEnabled      Boolean         @default(true)
   newsGuardBeforeMinutes Int            @default(30)
   newsGuardAfterMinutes Int             @default(30)
-  candidateLabelHorizonBars Int         @default(16)
+  candidateLabelHorizonBars Int         @default(36)
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
   user                  User            @relation(fields: [userId], references: [id], onDelete: Cascade)

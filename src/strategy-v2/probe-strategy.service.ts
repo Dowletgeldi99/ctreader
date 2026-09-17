@@ -1,13 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
-import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectMarketRegime, resolveBarrierOutcome } from "./probe-strategy.math";
+import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectM5Trigger, detectMarketRegime, resolveBarrierOutcome } from "./probe-strategy.math";
 import type { Agent } from "../generated/prisma/client";
 import { randomUUID } from "node:crypto";
 
 export interface CandleInput {
   symbol: string;
-  timeframe: "M15" | "H1";
+  timeframe: "M5" | "M15" | "H1";
   openTime: Date;
   open: number;
   high: number;
@@ -37,7 +37,7 @@ export class ProbeStrategyService {
   async enableForMt5User(userId: string, accountId: string, enabled: boolean) {
     const account = await this.prisma.tradingAccount.findFirst({ where: { id: accountId, userId } });
     if (!account) throw new NotFoundException("MT5 account not found");
-    if (account.environment !== "DEMO") throw new BadRequestException("Strategy V2 is demo-only");
+    if (account.environment !== "DEMO") throw new BadRequestException("Strategy V3 is demo-only");
     return this.prisma.strategyConfig.upsert({
       where: { userId_accountId_symbol: { userId, accountId, symbol: "XAUUSD" } },
       create: { userId, accountId, executionVenue: "MT5", symbol: "XAUUSD", enabled },
@@ -48,7 +48,7 @@ export class ProbeStrategyService {
   async enableForCbotUser(userId: string, cbotInstanceId: string, enabled: boolean) {
     const instance = await this.prisma.cbotInstance.findFirst({ where: { id: cbotInstanceId, userId } });
     if (!instance) throw new NotFoundException("cBot instance not found");
-    if (instance.environment !== "DEMO") throw new BadRequestException("Strategy V2 is demo-only");
+    if (instance.environment !== "DEMO") throw new BadRequestException("Strategy V3 is demo-only");
     return this.prisma.strategyConfig.upsert({
       where: { userId_cbotInstanceId_symbol: { userId, cbotInstanceId, symbol: "XAUUSD" } },
       create: { userId, cbotInstanceId, executionVenue: "CBOT", symbol: "XAUUSD", enabled },
@@ -59,7 +59,7 @@ export class ProbeStrategyService {
   async ingestFromMt5(agent: Agent, input: CandleInput, evaluate = true): Promise<void> {
     const account = await this.prisma.tradingAccount.findFirst({ where: { agentId: agent.id, userId: agent.userId } });
     if (!account) throw new NotFoundException("MT5 account not found");
-    if (account.environment !== "DEMO") throw new BadRequestException("Strategy V2 candle ingestion is demo-only");
+    if (account.environment !== "DEMO") throw new BadRequestException("Strategy V3 candle ingestion is demo-only");
     await this.ingest({ ...input, source: `MT5:${account.id}` }, account.id, evaluate);
   }
 
@@ -73,6 +73,25 @@ export class ProbeStrategyService {
         candidates: { orderBy: { candleTime: "desc" }, take: 3 },
       },
     });
+  }
+
+  async feedStatusForUser(userId: string) {
+    const configs = await this.prisma.strategyConfig.findMany({
+      where: { userId, enabled: true, cbotInstanceId: { not: null } },
+      select: { id: true, cbotInstanceId: true, symbol: true },
+    });
+    return Promise.all(configs.map(async (config) => ({
+      configId: config.id,
+      cbotInstanceId: config.cbotInstanceId,
+      candles: await Promise.all((["H1", "M15", "M5"] as const).map(async (timeframe) => {
+        const candle = await this.prisma.marketCandle.findFirst({
+          where: { symbol: config.symbol, timeframe, source: `CBOT:${config.cbotInstanceId}` },
+          orderBy: { openTime: "desc" }, select: { openTime: true, close: true, tickVolume: true },
+        });
+        return { timeframe, openTime: candle?.openTime ?? null, close: candle?.close ?? null,
+          tickVolume: candle?.tickVolume ?? null };
+      })),
+    })));
   }
 
   async ingest(input: CandleInput, executionAccountId?: string, evaluate = true): Promise<void> {
@@ -105,7 +124,7 @@ export class ProbeStrategyService {
         source,
       },
     });
-    if (input.timeframe !== "M15" || !evaluate || input.isHistorical) return;
+    if (input.timeframe !== "M5" || !evaluate || input.isHistorical) return;
     const configs = await this.prisma.strategyConfig.findMany({
       where: {
         enabled: true,
@@ -115,44 +134,54 @@ export class ProbeStrategyService {
           : executionAccountId ? { executionVenue: "MT5", accountId: executionAccountId } : { executionVenue: "CTRADER" }),
       },
     });
-    for (const config of configs) await this.evaluate(config.id, input.openTime, source, input.point);
+    for (const config of configs) await this.evaluateV3(config.id, input.openTime, source, input.point);
   }
 
   async runMockDemo(userId: string): Promise<void> {
     const config = await this.prisma.strategyConfig.findFirst({ where: { userId, enabled: true, executionVenue: "CTRADER" } });
-    if (!config) throw new BadRequestException("Enable Strategy V2 first");
-    const base = new Date(Date.now() - 220 * 60 * 60_000);
+    if (!config) throw new BadRequestException("Enable Strategy V3 first");
+    const base = new Date(Date.now() - 70 * 60 * 60_000);
     const source = `DEMO_${Date.now()}`;
-    for (let index = 0; index < 205; index += 1) {
-      const close = 2_300 + index;
+    for (let index = 0; index < 60; index += 1) {
+      const close = 2_300 + index * 0.8;
       await this.ingest({ symbol: config.symbol, timeframe: "H1", openTime: new Date(base.getTime() + index * 60 * 60_000), open: close - 0.3, high: close + 0.5, low: close - 0.5, close, source });
     }
-    const m15Base = new Date(Date.now() - 24 * 15 * 60_000);
-    for (let index = 0; index < 21; index += 1) {
-      const close = 2_500 + index * 0.05;
-      await this.ingest({ symbol: config.symbol, timeframe: "M15", openTime: new Date(m15Base.getTime() + index * 15 * 60_000), open: close - 0.05, high: close + 0.2, low: close - 0.2, close, spreadPoints: 10, source });
+    const m15Base = new Date(Date.now() - 30 * 15 * 60_000);
+    for (let index = 0; index < 25; index += 1) {
+      const close = 2_348 + index * 0.04;
+      await this.ingest({ symbol: config.symbol, timeframe: "M15", openTime: new Date(m15Base.getTime() + index * 15 * 60_000), open: close - 0.05, high: close + 0.2, low: close - 0.2, close, tickVolume: 100, source });
     }
-    const level = 2_500 + 20 * 0.05 + 0.2;
-    const breakoutTime = new Date(m15Base.getTime() + 21 * 15 * 60_000);
-    await this.ingest({ symbol: config.symbol, timeframe: "M15", openTime: breakoutTime, open: level - 0.1, high: level + 0.5, low: level - 0.15, close: level + 0.3, spreadPoints: 10, source });
-    await this.ingest({ symbol: config.symbol, timeframe: "M15", openTime: new Date(breakoutTime.getTime() + 15 * 60_000), open: level + 0.25, high: level + 0.7, low: level - 0.05, close: level + 0.45, spreadPoints: 10, source });
+    const level = 2_348 + 24 * 0.04 + 0.2;
+    const m5Base = new Date(Date.now() - 20 * 5 * 60_000);
+    for (let index = 0; index < 16; index += 1) {
+      const close = level - 0.35 + index * 0.005;
+      await this.ingest({ symbol: config.symbol, timeframe: "M5", openTime: new Date(m5Base.getTime() + index * 5 * 60_000),
+        open: close - 0.02, high: close + 0.08, low: close - 0.08, close, tickVolume: 100, spreadPoints: 10, source });
+    }
+    const breakoutTime = new Date(m5Base.getTime() + 16 * 5 * 60_000);
+    await this.ingest({ symbol: config.symbol, timeframe: "M5", openTime: breakoutTime,
+      open: level - 0.08, high: level + 0.30, low: level - 0.10, close: level + 0.22,
+      tickVolume: 160, spreadPoints: 10, source });
+    await this.ingest({ symbol: config.symbol, timeframe: "M5", openTime: new Date(breakoutTime.getTime() + 5 * 60_000),
+      open: level + 0.20, high: level + 0.45, low: level + 0.05, close: level + 0.40,
+      tickVolume: 150, spreadPoints: 10, source });
     const active = await this.prisma.strategyPosition.findFirst({
       where: { strategyConfigId: config.id, state: "MAIN_ADDED" }, orderBy: { createdAt: "desc" },
     });
     if (active) {
       await this.ingest({
-        symbol: config.symbol, timeframe: "M15", openTime: new Date(breakoutTime.getTime() + 30 * 60_000),
+        symbol: config.symbol, timeframe: "M5", openTime: new Date(breakoutTime.getTime() + 10 * 60_000),
         open: level + 0.5, high: Number(active.takeProfitPrice) + 0.1, low: level + 0.3,
-        close: Number(active.takeProfitPrice), spreadPoints: 10, source,
+        close: Number(active.takeProfitPrice), spreadPoints: 10, tickVolume: 140, source,
       });
     }
   }
 
-  private async evaluate(configId: string, candleTime: Date, source: string, point?: number): Promise<void> {
+  private async evaluateV3(configId: string, candleTime: Date, source: string, point?: number): Promise<void> {
     const config = await this.prisma.strategyConfig.findUnique({ where: { id: configId } });
     if (!config?.enabled) return;
     const currentRecord = await this.prisma.marketCandle.findFirst({
-      where: { symbol: config.symbol, timeframe: "M15", openTime: candleTime, source }, orderBy: { createdAt: "desc" },
+      where: { symbol: config.symbol, timeframe: "M5", openTime: candleTime, source }, orderBy: { createdAt: "desc" },
     });
     if (!currentRecord) return;
     const current = this.toValue(currentRecord);
@@ -168,52 +197,58 @@ export class ProbeStrategyService {
     const lastClosed = await this.prisma.strategyPosition.findFirst({
       where: { strategyConfigId: config.id, closedAt: { not: null } }, orderBy: { closedAt: "desc" },
     });
-    if (lastClosed?.closedAt && candleTime.getTime() < lastClosed.closedAt.getTime() + config.cooldownBars * 15 * 60_000) return;
+    if (lastClosed?.closedAt && candleTime.getTime() < lastClosed.closedAt.getTime() + config.cooldownBars * 5 * 60_000) return;
 
-    const [h1Records, m15Records] = await Promise.all([
+    const structureCutoff = new Date(candleTime.getTime() - 15 * 60_000);
+    const [h1Records, m15Records, m5Records] = await Promise.all([
       this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "H1", source, openTime: { lte: candleTime } }, orderBy: { openTime: "desc" }, take: config.emaSlowPeriod + 20 }),
-      this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M15", source, openTime: { lt: candleTime } }, orderBy: { openTime: "desc" }, take: Math.max(config.breakoutPeriod, config.atrPeriod + 1, 25) + 5 }),
+      this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M15", source,
+        openTime: { lte: structureCutoff } }, orderBy: { openTime: "desc" }, take: config.breakoutPeriod + 5 }),
+      this.prisma.marketCandle.findMany({ where: { symbol: config.symbol, timeframe: "M5", source, openTime: { lt: candleTime } }, orderBy: { openTime: "desc" }, take: Math.max(config.atrPeriod + 1, 30) + 5 }),
     ]);
     const h1 = h1Records.reverse().map((item) => this.toValue(item));
     const previousM15 = m15Records.reverse().map((item) => this.toValue(item));
-    if (h1.length < config.emaSlowPeriod + 3 || previousM15.length < Math.max(config.breakoutPeriod, config.atrPeriod + 1)) return;
+    const previousM5 = m5Records.reverse().map((item) => this.toValue(item));
+    if (h1.length < config.emaSlowPeriod + 3 || previousM15.length < config.breakoutPeriod
+      || previousM5.length < config.atrPeriod + 1) return;
     const regimeResult = detectMarketRegime(h1, config.emaFastPeriod, config.emaSlowPeriod, config.atrPeriod,
       Number(config.minEmaSeparationAtr), Number(config.minEmaSlopeAtr));
-    const currentAtr = atr(previousM15, config.atrPeriod);
+    const currentAtr = atr(previousM5, config.atrPeriod);
 
     const buyLevel = breakoutLevel(previousM15, config.breakoutPeriod, "BUY");
     const sellLevel = breakoutLevel(previousM15, config.breakoutPeriod, "SELL");
-    const direction = regimeResult.emaFast > regimeResult.emaSlow && current.close > buyLevel
-      ? "BUY"
-      : regimeResult.emaFast < regimeResult.emaSlow && current.close < sellLevel ? "SELL" : null;
-    if (!direction) return;
-    const level = direction === "BUY" ? buyLevel : sellLevel;
+    const previous = previousM5.at(-1)!;
+    const signal = detectM5Trigger({ bias: regimeResult.emaFast > regimeResult.emaSlow ? "BUY" : "SELL",
+      previous, current, buyLevel, sellLevel, atr: currentAtr });
+    if (!signal) return;
+    const { direction, level, trigger } = signal;
     const riskDistance = currentAtr * Number(config.stopAtrMultiplier);
     const stop = current.close + (direction === "BUY" ? -riskDistance : riskDistance);
     const target = current.close + (direction === "BUY" ? riskDistance : -riskDistance) * Number(config.takeProfitR);
-    const labelExpiresAt = new Date(candleTime.getTime() + config.candidateLabelHorizonBars * 15 * 60_000);
+    const labelExpiresAt = new Date(candleTime.getTime() + config.candidateLabelHorizonBars * 5 * 60_000);
     const quality = assessBreakoutQuality({
       candle: current, direction, level, atr: currentAtr,
-      previousTickVolumes: previousM15.flatMap((candle) => candle.tickVolume === undefined ? [] : [candle.tickVolume]),
+      previousTickVolumes: previousM5.flatMap((candle) => candle.tickVolume === undefined ? [] : [candle.tickVolume]),
       minBodyRatio: Number(config.minBreakoutBodyRatio),
       minCloseBeyondAtr: Number(config.minBreakoutCloseAtr),
       maxOppositeWickRatio: Number(config.maxOppositeWickRatio),
       maxRangeAtr: Number(config.maxBreakoutRangeAtr),
       minTickVolumeRatio: Number(config.minTickVolumeRatio),
     });
-    const regime = quality.reasons.includes("HIGH_VOL_BREAKOUT") ? "HIGH_VOL" : regimeResult.regime;
-    const reasons = [...quality.reasons];
+    const highVol = quality.rangeAtr >= 2;
+    const regime = highVol ? "HIGH_VOL" : regimeResult.regime;
+    const reasons = quality.reasons.map((reason) => reason === "HIGH_VOL_BREAKOUT" ? "EXTREME_VOLATILITY" : reason);
     const expectedRegime = direction === "BUY" ? "TREND_UP" : "TREND_DOWN";
-    if (config.regimeFilterEnabled && regime !== expectedRegime && regime !== "HIGH_VOL") reasons.push("REGIME_MISMATCH");
+    if (config.regimeFilterEnabled && regimeResult.regime !== expectedRegime) reasons.push("REGIME_MISMATCH");
     if (current.spreadPoints !== undefined && config.maxSpreadPoints > 0 && current.spreadPoints > config.maxSpreadPoints) {
       reasons.push("SPREAD_TOO_WIDE");
     }
     const newsEvent = source.startsWith("DEMO_") || !config.newsGuardEnabled
       ? null
-      : await this.findBlockingNews(candleTime, config.newsGuardBeforeMinutes, config.newsGuardAfterMinutes);
+      : await this.findBlockingNews(candleTime, 5, config.newsGuardBeforeMinutes, config.newsGuardAfterMinutes);
     if (newsEvent) reasons.push("HIGH_IMPACT_USD_NEWS");
     const features: Prisma.InputJsonObject = {
-      strategyVersion: "2.1", atr: currentAtr, h1Atr: regimeResult.atr,
+      strategyVersion: "3.0", trigger, atr: currentAtr, h1Atr: regimeResult.atr,
       emaFast: regimeResult.emaFast, emaSlow: regimeResult.emaSlow,
       emaSeparationAtr: regimeResult.separationAtr, emaSlopeAtr: regimeResult.slopeAtr,
       breakoutLevel: level, breakoutRangeAtr: quality.rangeAtr, bodyRatio: quality.bodyRatio,
@@ -241,9 +276,10 @@ export class ProbeStrategyService {
         atrAtEntry: currentAtr, probeEntryPrice: current.close, stopLossPrice: stop,
         takeProfitPrice: target, probeRiskPercent: config.probeRiskPercent,
         mainRiskPercent: config.mainRiskPercent,
-        confirmationDeadline: new Date(candleTime.getTime() + config.confirmationBars * 15 * 60_000),
+        confirmationDeadline: new Date(candleTime.getTime() + config.confirmationBars * 5 * 60_000),
         openedAt: candleTime,
-        events: { create: { type: "PROBE_FILLED", occurredAt: candleTime, price: current.close, message: `${direction} probe opened at 25% size` } },
+        events: { create: { type: "V3_PROBE_SIGNAL", occurredAt: candleTime, price: current.close,
+          message: `${direction} ${trigger.toLowerCase()} probe scheduled from M5` } },
       },
     });
     if (config.executionVenue === "MT5" && config.accountId) {
@@ -253,8 +289,8 @@ export class ProbeStrategyService {
     }
   }
 
-  private findBlockingNews(candleTime: Date, beforeMinutes: number, afterMinutes: number) {
-    const signalTime = new Date(candleTime.getTime() + 15 * 60_000);
+  private findBlockingNews(candleTime: Date, timeframeMinutes: number, beforeMinutes: number, afterMinutes: number) {
+    const signalTime = new Date(candleTime.getTime() + timeframeMinutes * 60_000);
     return this.prisma.economicEvent.findFirst({
       where: {
         currency: "USD", importance: "HIGH",
@@ -306,7 +342,7 @@ export class ProbeStrategyService {
       await this.closePosition(position.id, candle, "CLOSED_SL", Number(position.stopLossPrice), "Stop Loss", -1);
       return;
     }
-    if (position.state === "MAIN_ADDED" && targetHit) {
+    if (targetHit) {
       await this.closePosition(position.id, candle, "CLOSED_TP", Number(position.takeProfitPrice), "Take Profit", 3);
       return;
     }
@@ -322,7 +358,8 @@ export class ProbeStrategyService {
         where: { id: position.id },
         data: {
           state: "MAIN_ADDED", mainEntryPrice: candle.close, mainAddedAt: candle.openTime,
-          events: { create: { type: "MAIN_ADDED", occurredAt: candle.openTime, price: candle.close, message: "Confirmation received; remaining 75% added" } },
+          events: { create: { type: "MAIN_ADDED", occurredAt: candle.openTime, price: candle.close,
+            message: "M5 confirmation received; second 0.01 lot leg added" } },
         },
       });
       const full = await this.prisma.strategyPosition.findUnique({ where: { id: updated.id } });
@@ -388,13 +425,13 @@ export class ProbeStrategyService {
     const executeAt = new Date(Date.now() + 3_000);
     await this.prisma.tradeJob.create({
       data: {
-        userId, cbotInstanceId, executionVenue: "CBOT", idempotencyKey: `strategy-v2:${positionId}:${leg}`,
+        userId, cbotInstanceId, executionVenue: "CBOT", idempotencyKey: `strategy-v3:${positionId}:${leg}`,
         symbol: instance.symbol, direction, executionMode: "MARKET", riskMode: "FIXED_LOT", fixedLot: 0.01,
         stopLossPoints, takeProfitPoints, deviationPoints: 20, maxSpreadPoints: 0,
         armSeconds: 2, maxLatenessMs: 10_000, executeAt,
         expiresAt: new Date(executeAt.getTime() + 10_000), status: "SCHEDULED",
         settingsSnapshot: {
-          protocolVersion: 2, strategy: "PROBE_ENTRY_V2", strategyPositionId: positionId,
+          protocolVersion: 2, strategy: "PROBE_ENTRY_V3", strategyPositionId: positionId,
           leg, demoOnly: true, expectedEntry: entry, sharedStop: stop, sharedTarget: target,
         },
       },
@@ -405,7 +442,7 @@ export class ProbeStrategyService {
     await this.prisma.strategyEvent.create({
       data: {
         strategyPositionId: positionId, type: `CBOT_${leg}_SCHEDULED`, occurredAt: new Date(), price: entry,
-        message: `cBot demo ${leg.toLowerCase()} order scheduled at fixed 0.01 lot`, metadata: { requestId: randomUUID() },
+        message: `Strategy V3 cBot demo ${leg.toLowerCase()} order scheduled at fixed 0.01 lot`, metadata: { requestId: randomUUID() },
       },
     });
   }

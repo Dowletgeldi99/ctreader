@@ -29,6 +29,32 @@ export interface BreakoutQualityResult {
   tickVolumeRatio?: number;
 }
 
+export function detectM5Trigger(input: {
+  bias: "BUY" | "SELL";
+  previous: CandleValue;
+  current: CandleValue;
+  buyLevel: number;
+  sellLevel: number;
+  atr: number;
+}): { direction: "BUY" | "SELL"; trigger: "FAST_BREAKOUT" | "RETEST"; level: number } | undefined {
+  if (input.bias === "BUY") {
+    const breakout = input.previous.close <= input.buyLevel && input.current.close > input.buyLevel;
+    const retest = input.previous.close > input.buyLevel
+      && input.current.low <= input.buyLevel + 0.15 * input.atr
+      && input.current.close > input.buyLevel && input.current.close > input.current.open;
+    if (breakout || retest) return { direction: "BUY", trigger: retest ? "RETEST" : "FAST_BREAKOUT",
+      level: input.buyLevel };
+  } else {
+    const breakout = input.previous.close >= input.sellLevel && input.current.close < input.sellLevel;
+    const retest = input.previous.close < input.sellLevel
+      && input.current.high >= input.sellLevel - 0.15 * input.atr
+      && input.current.close < input.sellLevel && input.current.close < input.current.open;
+    if (breakout || retest) return { direction: "SELL", trigger: retest ? "RETEST" : "FAST_BREAKOUT",
+      level: input.sellLevel };
+  }
+  return undefined;
+}
+
 export function resolveBarrierOutcome(input: {
   direction: "BUY" | "SELL";
   stopLoss: number;

@@ -3,7 +3,7 @@ import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsIn, IsN
 
 export class CbotCandleDto {
   @IsString() symbol!: string;
-  @IsIn(["M15", "H1"]) timeframe!: "M15" | "H1";
+  @IsIn(["M5", "M15", "H1"]) timeframe!: "M5" | "M15" | "H1";
   @IsDateString() openTime!: string;
   @IsNumber() open!: number;
   @IsNumber() high!: number;

@@ -87,19 +87,19 @@ The EA does not submit an order when:
 - the idempotency ledger cannot be persisted;
 - the configured execution deadline has passed.
 
-## Strategy V2 candle feed
+## Strategy V3 candle feed
 
-Strategy V2.1 also accepts optional `tickVolume` and `isHistorical` fields.
+Strategy V3 accepts `M5`, `M15` and `H1` plus optional `tickVolume` and `isHistorical` fields.
 Historical candles are stored for indicator warm-up but never trigger an entry.
 Historical spread must be omitted unless it was measured at that candle close.
 
-When `InpEnableStrategyV2=true`, the EA sends only completed XAUUSD candles. On startup it sends 220 H1 and 50 M15 candles; afterwards it sends a batch only when a new H1 or M15 candle closes. Broker-server candle timestamps are converted to UTC.
+The cBot sends only completed XAUUSD candles. On startup it sends 220 H1 and 50 M15 candles in one batch and 300 M5 candles in a separate batch. Afterwards it sends a batch whenever a new H1, M15 or M5 candle closes. Broker-server candle timestamps are converted to UTC.
 
 ```json
 {
   "candles": [{
     "symbol": "XAUUSD",
-    "timeframe": "M15",
+    "timeframe": "M5",
     "openTime": "2026-08-25T12:00:00Z",
     "open": 2500.1,
     "high": 2501.2,
@@ -113,4 +113,4 @@ When `InpEnableStrategyV2=true`, the EA sends only completed XAUUSD candles. On 
 }
 ```
 
-The endpoint accepts at most 300 candles and only from the authenticated agent's demo account. Historical candles seed EMA/ATR calculations; only the newest completed M15 candle in each batch may advance the strategy state machine. Strategy orders are emitted through the existing `JOB2` protocol with fixed `0.01` lot for each of the PROBE and MAIN legs.
+The endpoint accepts at most 300 candles and only from the authenticated agent's demo account. Historical candles seed EMA/ATR calculations and never advance the state machine. Every newly completed M5 candle may evaluate Strategy V3. Orders are emitted through the existing job protocol with fixed `0.01` lot for each of the PROBE and MAIN legs.

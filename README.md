@@ -216,46 +216,33 @@ Restart the backend, run `/connect_ctrader` to create an isolated mock demo acco
 
 Mock mode never connects to cTrader or a broker and never sends a real order. Disable it after Open API approval.
 
-## Strategy V2.1: Probe Entry
+## Strategy V3: H1 context, M15 structure, M5 entry
 
 The first non-news strategy is implemented for `XAUUSD` as a connector-independent state machine:
 
-- H1 trend regime: EMA 50/200 separation and slope normalised by ATR;
-- M15 breakout of the previous 20 completed candles;
-- breakout body, rejection wick, close distance, tick-volume and abnormal-volatility filters;
+- H1 trend regime: EMA 20/50 separation and slope normalised by ATR;
+- structure levels from the previous 20 completed M15 candles;
+- fast breakout or held retest on a completed M5 candle;
+- M5 body, rejection wick, close distance, tick-volume and extreme-volatility filters;
+- high-volatility entries are allowed when the M5 candle remains high quality;
 - configurable blackout around high-importance USD economic events;
 - an auditable `EXECUTE`/`SKIP` candidate record with model-ready feature snapshots;
-- one probe entry risking 0.10%;
-- remaining 0.30% is added only after a held retest or 0.5 ATR favourable movement;
-- 1.2 ATR stop, 3R target, three-bar confirmation deadline and four-bar cooldown;
+- one fixed `0.01 lot` demo PROBE entry;
+- one fixed `0.01 lot` demo MAIN is added only after a held retest or 0.5 M5 ATR favourable movement;
+- 1.2 M5 ATR stop, 3R target, three-M5-bar confirmation deadline and four-M5-bar cooldown;
 - no averaging down, grid or martingale;
 - spread limit and one active position per strategy configuration;
-- startup history warms indicators but cannot create a trade, and historical spread is not fabricated.
+- startup H1/M15/M5 history warms indicators but cannot create a trade, and historical spread is not fabricated.
 
 Telegram commands:
 
 ```text
-/strategy_v2    configure and enable the strategy for a cTrader account
-/strategy_demo  generate a deterministic mock trend, breakout, retest and TP scenario
+/strategy_v3    configure and enable Strategy V3 for a cBot demo account
+/strategy_demo  generate a deterministic mock H1/M15/M5 scenario
 ```
 
-For external candle ingestion, send an authenticated `POST /api/v1/strategy-v2/candles` request with `x-admin-api-key`. cBot Cloud and MT5 demo execution use the existing job adapters. Historical/forward validation and risk-sized PROBE/MAIN volumes are still required before live trading.
+For external candle ingestion, send an authenticated `POST /api/v1/strategy-v2/candles` request with `x-admin-api-key`. cBot Cloud demo execution uses the existing job adapter. Historical/forward validation and risk-sized PROBE/MAIN volumes are still required before live trading.
 
-### Strategy V2 on an MT5 demo account
+### MT5 compatibility
 
-The MT5 agent can provide real broker candles and execute the strategy through the existing idempotent job protocol while cTrader approval is pending.
-
-1. Compile the updated `NewsTraderAgent.mq5` (`0.3.0`) in MetaEditor.
-2. Attach it to any chart on the already paired demo terminal.
-3. Set:
-
-```text
-InpEnableStrategyV2 = true
-InpStrategySymbol   = XAUUSD
-InpAllowRealTrading = false
-```
-
-4. Restart the backend and EA, then run `/strategy_v2` in Telegram and enable the row labelled `MT5 <login>`.
-5. Keep the terminal and Algo Trading enabled. The strategy checks only completed M15 candles, so it may legitimately wait many hours or days for a valid signal.
-
-For this certification stage, PROBE and MAIN are separate market jobs of `0.01` lot each. They use the same strategy-derived risk distances, but the EA calculates each leg's actual SL/TP from its own fill price. Only demo accounts are accepted by both backend and EA. Do not enable this version on a real account.
+The current MT5 agent does not publish M5 candles and therefore does not execute Strategy V3. Use the cBot Cloud demo connector for V3. The MT5 news-trading modes remain unchanged.

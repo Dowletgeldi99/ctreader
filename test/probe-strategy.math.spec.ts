@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectMarketRegime, ema, resolveBarrierOutcome } from "../src/strategy-v2/probe-strategy.math";
+import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectM5Trigger, detectMarketRegime, ema, resolveBarrierOutcome } from "../src/strategy-v2/probe-strategy.math";
 
 function candles(closes: number[]): CandleValue[] {
   return closes.map((close, index) => ({
@@ -12,7 +12,7 @@ function candles(closes: number[]): CandleValue[] {
   }));
 }
 
-describe("Probe Strategy V2 math", () => {
+describe("Strategy V3 math", () => {
   it("detects an upward EMA regime", () => {
     const closes = Array.from({ length: 220 }, (_, index) => 2_000 + index);
     expect(ema(closes, 50)).toBeGreaterThan(ema(closes, 200));
@@ -79,5 +79,19 @@ describe("Probe Strategy V2 math", () => {
       candle: { openTime: new Date(), open: 100, high: 104, low: 98, close: 102 } })).toBe("SL");
     expect(resolveBarrierOutcome({ direction: "SELL", stopLoss: 103, takeProfit: 99,
       candle: { openTime: new Date(), open: 102, high: 102.5, low: 98.5, close: 99 } })).toBe("TP");
+  });
+
+  it("detects an M5 breakout in the H1 bias direction", () => {
+    const result = detectM5Trigger({ bias: "BUY", buyLevel: 101, sellLevel: 98, atr: 1,
+      previous: { openTime: new Date(0), open: 100, high: 101, low: 99.5, close: 100.8 },
+      current: { openTime: new Date(1), open: 100.8, high: 101.5, low: 100.7, close: 101.3 } });
+    expect(result).toEqual({ direction: "BUY", trigger: "FAST_BREAKOUT", level: 101 });
+  });
+
+  it("detects an M5 retest after the level holds", () => {
+    const result = detectM5Trigger({ bias: "SELL", buyLevel: 103, sellLevel: 100, atr: 1,
+      previous: { openTime: new Date(0), open: 100, high: 100.1, low: 99.4, close: 99.6 },
+      current: { openTime: new Date(1), open: 99.8, high: 100.1, low: 99.2, close: 99.4 } });
+    expect(result).toEqual({ direction: "SELL", trigger: "RETEST", level: 100 });
   });
 });

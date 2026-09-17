@@ -27,15 +27,13 @@ export class CbotService {
   async ingestStrategyCandles(instanceId: string, dto: CbotCandleBatchDto) {
     const instance = await this.prisma.cbotInstance.findUnique({ where: { id: instanceId } });
     if (!instance) throw new NotFoundException("cBot instance not found");
-    if (instance.environment !== "DEMO") throw new BadRequestException("Strategy V2 is demo-only");
+    if (instance.environment !== "DEMO") throw new BadRequestException("Automated strategies are demo-only");
     const source = `CBOT:${instance.id}`;
     const candles = [...dto.candles].sort((a, b) => new Date(a.openTime).getTime() - new Date(b.openTime).getTime());
-    for (let index = 0; index < candles.length; index += 1) {
-      const candle = candles[index];
+    for (const candle of candles) {
       if (candle.symbol.toUpperCase() !== instance.symbol.toUpperCase())
         throw new BadRequestException("Candle symbol does not match cBot instance");
-      await this.probeStrategy.ingest({ ...candle, openTime: new Date(candle.openTime), source }, instance.id,
-        candle.timeframe === "M15" && index === candles.length - 1);
+      await this.probeStrategy.ingest({ ...candle, openTime: new Date(candle.openTime), source }, instance.id, true);
     }
     return { accepted: candles.length };
   }
@@ -214,7 +212,7 @@ export class CbotService {
       const snapshot = job.settingsSnapshot as Prisma.JsonObject;
       const positionId = typeof snapshot.strategyPositionId === "string" ? snapshot.strategyPositionId : undefined;
       const leg = snapshot.leg;
-      if (snapshot.strategy === "PROBE_ENTRY_V2" && leg === "PROBE" && positionId) {
+      if (["PROBE_ENTRY_V2", "PROBE_ENTRY_V3"].includes(String(snapshot.strategy)) && leg === "PROBE" && positionId) {
         await this.prisma.strategyPosition.updateMany({
           where: { id: positionId, state: "PROBE_OPEN" },
           data: { state: "CLOSED_TIMEOUT", closedAt: occurredAt, closeReason: `cBot rejected probe: ${dto.message ?? dto.phase}` },

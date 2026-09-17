@@ -30,7 +30,7 @@ export class AgentsController {
     @Req() request: AgentRequest,
     @Body() body: {
       symbol: string;
-      timeframe: "M15" | "H1";
+      timeframe: "M5" | "M15" | "H1";
       openTime: string;
       open: number;
       high: number;
@@ -49,18 +49,18 @@ export class AgentsController {
   @Post("strategy-v2/candles/batch")
   async ingestStrategyCandles(
     @Req() request: AgentRequest,
-    @Body() body: { candles: Array<{ symbol: string; timeframe: "M15" | "H1"; openTime: string; open: number; high: number; low: number; close: number; spreadPoints?: number; point?: number; tickVolume?: number; isHistorical?: boolean }> },
+    @Body() body: { candles: Array<{ symbol: string; timeframe: "M5" | "M15" | "H1"; openTime: string; open: number; high: number; low: number; close: number; spreadPoints?: number; point?: number; tickVolume?: number; isHistorical?: boolean }> },
   ) {
     if (!Array.isArray(body.candles) || body.candles.length > 300) return { accepted: false };
-    let lastM15Index = -1;
+    let lastM5Index = -1;
     for (let index = 0; index < body.candles.length; index += 1) {
-      if (body.candles[index].timeframe === "M15") lastM15Index = index;
+      if (body.candles[index].timeframe === "M5") lastM5Index = index;
     }
     for (const [index, candle] of body.candles.entries()) {
       await this.probeStrategy.ingestFromMt5(
         request.agent,
         { ...candle, openTime: new Date(candle.openTime) },
-        index === lastM15Index,
+        index === lastM5Index,
       );
     }
     return { accepted: true, count: body.candles.length };

@@ -35,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.4.0";
+        private const string Version = "1.5.0";
         private const int PendingPlacementLeadSeconds = 3;
         private const int MaxReversalPlacementAttempts = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
@@ -63,9 +63,11 @@ namespace cAlgo.Robots
         private bool _pollInFlight;
         private bool _heartbeatInFlight;
         private Bars _m15Bars;
+        private Bars _m5Bars;
         private Bars _h1Bars;
         private bool _strategyHistorySent;
         private DateTime _lastM15Candle = DateTime.MinValue;
+        private DateTime _lastM5Candle = DateTime.MinValue;
         private DateTime _lastH1Candle = DateTime.MinValue;
 
         protected override void OnStart()
@@ -87,6 +89,7 @@ namespace cAlgo.Robots
             }
             _token = LocalStorage.GetString(TokenKey);
             _m15Bars = MarketData.GetBars(TimeFrame.Minute15, SymbolName);
+            _m5Bars = MarketData.GetBars(TimeFrame.Minute5, SymbolName);
             _h1Bars = MarketData.GetBars(TimeFrame.Hour, SymbolName);
 
             PendingOrders.Filled += OnPendingFilled;
@@ -202,13 +205,17 @@ namespace cAlgo.Robots
                 AppendClosedBars(history, _h1Bars, "H1", 220, ref _lastH1Candle);
                 AppendClosedBars(history, _m15Bars, "M15", 50, ref _lastM15Candle);
                 if (history.Count > 0) SendWs("CANDLE_BATCH", new { candles = history }, true);
+                var m5History = new List<CandleDto>();
+                AppendClosedBars(m5History, _m5Bars, "M5", 300, ref _lastM5Candle);
+                if (m5History.Count > 0) SendWs("CANDLE_BATCH", new { candles = m5History }, true);
                 _strategyHistorySent = true;
-                Print("Strategy V2 history sent: {0} closed candles", history.Count);
+                Print("Strategy V3 history sent: H1/M15={0}, M5={1} closed candles", history.Count, m5History.Count);
                 return;
             }
             var updates = new List<CandleDto>();
             AppendNewClosedBar(updates, _h1Bars, "H1", ref _lastH1Candle);
             AppendNewClosedBar(updates, _m15Bars, "M15", ref _lastM15Candle);
+            AppendNewClosedBar(updates, _m5Bars, "M5", ref _lastM5Candle);
             if (updates.Count > 0) SendWs("CANDLE_BATCH", new { candles = updates }, true);
         }
 
