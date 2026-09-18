@@ -35,7 +35,7 @@ namespace cAlgo.Robots
 
         private const string TokenKey = "TradeTm Token";
         private const string InstanceKeyKey = "TradeTm Instance";
-        private const string Version = "1.5.1";
+        private const string Version = "1.5.2";
         private const int PendingPlacementLeadSeconds = 3;
         private const int MaxReversalPlacementAttempts = 3;
         private readonly JsonSerializerOptions _json = new JsonSerializerOptions
@@ -302,6 +302,9 @@ namespace cAlgo.Robots
             foreach (var runtime in _jobs.Values.ToArray())
             {
                 var job = runtime.Job;
+                // Terminal jobs stay in the local cache until a later poll omits them. Never
+                // repeat close/cancel reports while waiting for that server round-trip.
+                if (runtime.TerminalReported) continue;
                 if (!string.Equals(job.Symbol, SymbolName, StringComparison.OrdinalIgnoreCase))
                 {
                     if (!runtime.TerminalReported)

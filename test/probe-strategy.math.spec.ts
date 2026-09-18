@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectM5Trigger, detectMarketRegime,
+import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, confirmWaveMain, detectM5Trigger, detectMarketRegime,
   detectWaveTrigger, directionalEfficiency, ema, hardWaveReasons, resolveBarrierOutcome,
-  waveStop } from "../src/strategy-v2/probe-strategy.math";
+  waveMfeR, waveStop } from "../src/strategy-v2/probe-strategy.math";
 
 function candles(closes: number[]): CandleValue[] {
   return closes.map((close, index) => ({
@@ -111,6 +111,12 @@ describe("Strategy wave math", () => {
     expect(directionalEfficiency(candles([100, 101, 100, 101, 100]))).toBe(0);
   });
 
+  it("measures follow-through from the favourable candle extreme", () => {
+    const values = candles([100.2, 100.4, 100.1]);
+    expect(waveMfeR("BUY", 100, 98, values)).toBeCloseTo(0.45);
+    expect(waveMfeR("SELL", 100, 102, values)).toBeCloseTo(0.20);
+  });
+
   it("uses a structural wave stop and rejects excessive distance", () => {
     const previous = candles([100, 101, 102, 103, 104]);
     const result = waveStop({ direction: "BUY", previous, atr: 1,
@@ -127,8 +133,24 @@ describe("Strategy wave math", () => {
     expect(result.distanceAtr).toBeCloseTo(1.3);
   });
 
-  it("keeps wick, close depth and tick volume as observations instead of execution blockers", () => {
+  it("treats wick, close depth and tick volume as execution blockers", () => {
     expect(hardWaveReasons(["LARGE_REJECTION_WICK", "WEAK_CLOSE_BEYOND_LEVEL", "LOW_TICK_VOLUME",
-      "WEAK_BODY", "HIGH_VOL_BREAKOUT"])).toEqual(["WEAK_BODY", "EXTREME_VOLATILITY"]);
+      "WEAK_BODY", "HIGH_VOL_BREAKOUT"])).toEqual(["LARGE_REJECTION_WICK", "WEAK_CLOSE_BEYOND_LEVEL",
+      "LOW_TICK_VOLUME", "WEAK_BODY", "EXTREME_VOLATILITY"]);
+  });
+
+  it("requires a directional reclaim before adding the main leg", () => {
+    expect(confirmWaveMain({ direction: "BUY", level: 100, probeEntry: 101, atr: 2,
+      candle: { openTime: new Date(), open: 100.1, high: 101, low: 99.9, close: 100.6 } }))
+      .toBe("RETEST_RECLAIM");
+    expect(confirmWaveMain({ direction: "BUY", level: 100, probeEntry: 101, atr: 2,
+      candle: { openTime: new Date(), open: 100.7, high: 100.8, low: 99.9, close: 100.2 } }))
+      .toBeUndefined();
+  });
+
+  it("accepts strong directional momentum for the main leg", () => {
+    expect(confirmWaveMain({ direction: "SELL", level: 100, probeEntry: 99, atr: 2,
+      candle: { openTime: new Date(), open: 98.8, high: 98.9, low: 97.7, close: 97.8 } }))
+      .toBe("MOMENTUM");
   });
 });

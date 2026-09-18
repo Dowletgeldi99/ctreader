@@ -29,16 +29,37 @@ export interface BreakoutQualityResult {
   tickVolumeRatio?: number;
 }
 
-const WAVE_OBSERVATION_ONLY_REASONS = new Set([
-  "LARGE_REJECTION_WICK",
-  "WEAK_CLOSE_BEYOND_LEVEL",
-  "LOW_TICK_VOLUME",
-]);
-
 export function hardWaveReasons(reasons: string[]): string[] {
   return reasons
-    .filter((reason) => !WAVE_OBSERVATION_ONLY_REASONS.has(reason))
     .map((reason) => reason === "HIGH_VOL_BREAKOUT" ? "EXTREME_VOLATILITY" : reason);
+}
+
+export function confirmWaveMain(input: {
+  direction: "BUY" | "SELL";
+  candle: CandleValue;
+  level: number;
+  probeEntry: number;
+  atr: number;
+  minBodyRatio?: number;
+  minReclaimAtr?: number;
+  momentumAtr?: number;
+}): "RETEST_RECLAIM" | "MOMENTUM" | undefined {
+  const { candle, direction } = input;
+  const range = candle.high - candle.low;
+  if (range <= 0 || input.atr <= 0) return undefined;
+  const directionalBody = direction === "BUY" ? candle.close > candle.open : candle.close < candle.open;
+  const bodyRatio = Math.abs(candle.close - candle.open) / range;
+  if (!directionalBody || bodyRatio < (input.minBodyRatio ?? 0.45)) return undefined;
+
+  const reclaimDistance = direction === "BUY" ? candle.close - input.level : input.level - candle.close;
+  const touchedLevel = direction === "BUY" ? candle.low <= input.level : candle.high >= input.level;
+  if (touchedLevel && reclaimDistance >= (input.minReclaimAtr ?? 0.10) * input.atr) return "RETEST_RECLAIM";
+
+  const momentumDistance = direction === "BUY"
+    ? candle.close - input.probeEntry
+    : input.probeEntry - candle.close;
+  if (momentumDistance >= (input.momentumAtr ?? 0.50) * input.atr) return "MOMENTUM";
+  return undefined;
 }
 
 export function directionalEfficiency(candles: CandleValue[]): number {
@@ -47,6 +68,16 @@ export function directionalEfficiency(candles: CandleValue[]): number {
   const travelled = candles.slice(1).reduce((sum, candle, index) =>
     sum + Math.abs(candle.close - candles[index].close), 0);
   return travelled === 0 ? 0 : net / travelled;
+}
+
+export function waveMfeR(direction: "BUY" | "SELL", entry: number, stop: number,
+  candles: CandleValue[]): number {
+  const risk = Math.abs(entry - stop);
+  if (risk <= 0 || candles.length === 0) return 0;
+  const favourableExtreme = direction === "BUY"
+    ? Math.max(...candles.map((candle) => candle.high))
+    : Math.min(...candles.map((candle) => candle.low));
+  return (favourableExtreme - entry) * (direction === "BUY" ? 1 : -1) / risk;
 }
 
 export function detectWaveTrigger(input: {
@@ -235,7 +266,8 @@ export function assessBreakoutQuality(input: {
   if (closeBeyondAtr < input.minCloseBeyondAtr) reasons.push("WEAK_CLOSE_BEYOND_LEVEL");
   if (rangeAtr < (input.minRangeAtr ?? 0)) reasons.push("LOW_VOL_BREAKOUT");
   if (rangeAtr > input.maxRangeAtr) reasons.push("HIGH_VOL_BREAKOUT");
-  if (tickVolumeRatio !== undefined && tickVolumeRatio < input.minTickVolumeRatio) reasons.push("LOW_TICK_VOLUME");
+  if (tickVolumeRatio === undefined) reasons.push("MISSING_TICK_VOLUME");
+  else if (tickVolumeRatio < input.minTickVolumeRatio) reasons.push("LOW_TICK_VOLUME");
   return { accepted: reasons.length === 0, reasons, rangeAtr, bodyRatio, oppositeWickRatio,
     closeBeyondAtr, tickVolumeRatio };
 }

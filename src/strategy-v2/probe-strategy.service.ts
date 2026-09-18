@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
-import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, detectMarketRegime, detectWaveTrigger,
-  directionalEfficiency, hardWaveReasons, resolveBarrierOutcome, waveStop } from "./probe-strategy.math";
+import { assessBreakoutQuality, atr, breakoutLevel, CandleValue, confirmWaveMain, detectMarketRegime, detectWaveTrigger,
+  directionalEfficiency, hardWaveReasons, resolveBarrierOutcome, waveMfeR, waveStop } from "./probe-strategy.math";
 import type { Agent } from "../generated/prisma/client";
 import { randomUUID } from "node:crypto";
 
@@ -224,7 +224,7 @@ export class ProbeStrategyService {
       orderBy: { createdAt: "desc" },
     });
     if (active) {
-      await this.managePosition(active, current);
+      await this.managePosition(active, current, source);
       return;
     }
     const lastClosed = await this.prisma.strategyPosition.findFirst({
@@ -259,7 +259,7 @@ export class ProbeStrategyService {
       candle: current, direction, level, atr: currentAtr,
       previousTickVolumes: previousM5.flatMap((candle) => candle.tickVolume === undefined ? [] : [candle.tickVolume]),
       minBodyRatio: Number(config.minBreakoutBodyRatio),
-      minRangeAtr: 0.30,
+      minRangeAtr: 0.60,
       minCloseBeyondAtr: Number(config.minBreakoutCloseAtr),
       maxOppositeWickRatio: Number(config.maxOppositeWickRatio),
       maxRangeAtr: Number(config.maxBreakoutRangeAtr),
@@ -268,6 +268,11 @@ export class ProbeStrategyService {
     const highVol = quality.rangeAtr >= 1.8;
     const regime = highVol ? "HIGH_VOL" : m15Regime.regime;
     const reasons = hardWaveReasons(quality.reasons);
+    const expectedRegime = direction === "BUY" ? "TREND_UP" : "TREND_DOWN";
+    if (config.regimeFilterEnabled && m15Regime.regime !== expectedRegime) {
+      reasons.push(m15Regime.regime === "RANGE" ? "M15_RANGE" : "M15_DIRECTION_MISMATCH");
+    }
+    if (m5Efficiency < 0.30) reasons.push("LOW_DIRECTIONAL_EFFICIENCY");
     if (!stopResult.valid) reasons.push("STRUCTURAL_STOP_TOO_WIDE");
     if (current.spreadPoints !== undefined && config.maxSpreadPoints > 0 && current.spreadPoints > config.maxSpreadPoints) {
       reasons.push("SPREAD_TOO_WIDE");
@@ -277,7 +282,7 @@ export class ProbeStrategyService {
       : await this.findBlockingNews(candleTime, 5, config.newsGuardBeforeMinutes, config.newsGuardAfterMinutes);
     if (newsEvent) reasons.push("HIGH_IMPACT_USD_NEWS");
     const features: Prisma.InputJsonObject = {
-      strategyVersion: "4.2", trigger, atr: currentAtr, m15Regime: m15Regime.regime,
+      strategyVersion: "4.3", trigger, atr: currentAtr, m15Regime: m15Regime.regime,
       emaFast: m15Regime.emaFast, emaSlow: m15Regime.emaSlow,
       emaSeparationAtr: m15Regime.separationAtr, emaSlopeAtr: m15Regime.slopeAtr,
       directionalEfficiency: m5Efficiency, stopDistanceAtr: stopResult.distanceAtr,
@@ -365,7 +370,11 @@ export class ProbeStrategyService {
     }
   }
 
-  private async managePosition(position: { id: string; state: string; direction: string; breakoutLevel: Prisma.Decimal; atrAtEntry: Prisma.Decimal; probeEntryPrice: Prisma.Decimal; stopLossPrice: Prisma.Decimal; takeProfitPrice: Prisma.Decimal; confirmationDeadline: Date }, candle: CandleValue): Promise<void> {
+  private async managePosition(position: { id: string; state: string; direction: string; symbol: string;
+    breakoutLevel: Prisma.Decimal;
+    atrAtEntry: Prisma.Decimal; probeEntryPrice: Prisma.Decimal; mainEntryPrice: Prisma.Decimal | null;
+    stopLossPrice: Prisma.Decimal; takeProfitPrice: Prisma.Decimal; confirmationDeadline: Date; openedAt: Date },
+    candle: CandleValue, source: string): Promise<void> {
     const buy = position.direction === "BUY";
     const stopHit = buy ? candle.low <= Number(position.stopLossPrice) : candle.high >= Number(position.stopLossPrice);
     const targetHit = buy ? candle.high >= Number(position.takeProfitPrice) : candle.low <= Number(position.takeProfitPrice);
@@ -379,20 +388,42 @@ export class ProbeStrategyService {
       await this.closePosition(position.id, candle, "CLOSED_TP", Number(position.takeProfitPrice), "Take Profit", targetR);
       return;
     }
+    const followThroughBars = 6;
+    if (candle.openTime.getTime() >= position.openedAt.getTime() + followThroughBars * 5 * 60_000) {
+      const postEntryCandles = await this.prisma.marketCandle.findMany({
+        where: { symbol: position.symbol, timeframe: "M5", source,
+          openTime: { gt: position.openedAt, lte: candle.openTime } },
+        orderBy: { openTime: "asc" }, take: followThroughBars,
+      });
+      if (postEntryCandles.length >= followThroughBars) {
+        const probeEntry = Number(position.probeEntryPrice);
+        const mfeR = waveMfeR(buy ? "BUY" : "SELL", probeEntry, Number(position.stopLossPrice),
+          postEntryCandles.map((item) => this.toValue(item)));
+        if (mfeR < 0.50) {
+          const entries = position.mainEntryPrice === null
+            ? [probeEntry]
+            : [probeEntry, Number(position.mainEntryPrice)];
+          const averageEntry = entries.reduce((sum, value) => sum + value, 0) / entries.length;
+          const realizedR = (candle.close - averageEntry) * (buy ? 1 : -1)
+            / Math.abs(averageEntry - Number(position.stopLossPrice));
+          await this.closePosition(position.id, candle, "CLOSED_TIMEOUT", candle.close,
+            "NO_FOLLOW_THROUGH: MFE below 0.5R after 6 M5 bars", realizedR);
+          return;
+        }
+      }
+    }
     if (position.state !== "PROBE_OPEN") return;
     const level = Number(position.breakoutLevel);
     const atrValue = Number(position.atrAtEntry);
-    const retestHeld = buy ? candle.low <= level && candle.close > level : candle.high >= level && candle.close < level;
-    const momentumConfirmed = buy
-      ? candle.close >= Number(position.probeEntryPrice) + 0.5 * atrValue
-      : candle.close <= Number(position.probeEntryPrice) - 0.5 * atrValue;
-    if (retestHeld || momentumConfirmed) {
+    const confirmation = confirmWaveMain({ direction: buy ? "BUY" : "SELL", candle, level,
+      probeEntry: Number(position.probeEntryPrice), atr: atrValue });
+    if (confirmation) {
       const updated = await this.prisma.strategyPosition.update({
         where: { id: position.id },
         data: {
           state: "MAIN_ADDED", mainEntryPrice: candle.close, mainAddedAt: candle.openTime,
           events: { create: { type: "MAIN_ADDED", occurredAt: candle.openTime, price: candle.close,
-            message: "M5 confirmation received; second 0.01 lot leg added" } },
+            message: `M5 ${confirmation.toLowerCase()} confirmed; second 0.01 lot leg added` } },
         },
       });
       const full = await this.prisma.strategyPosition.findUnique({ where: { id: updated.id } });
@@ -491,12 +522,24 @@ export class ProbeStrategyService {
         data: { closeRequestedAt: new Date() },
       });
     }
-    await this.prisma.strategyPosition.update({
-      where: { id },
-      data: {
-        state, closedAt: candle.openTime, closePrice: price, closeReason: reason, realizedR,
-        events: { create: { type: state, occurredAt: candle.openTime, price, message: reason } },
-      },
+    const position = await this.prisma.strategyPosition.findUnique({
+      where: { id }, select: { strategyConfigId: true, openedAt: true },
+    });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.strategyPosition.update({
+        where: { id },
+        data: {
+          state, closedAt: candle.openTime, closePrice: price, closeReason: reason, realizedR,
+          events: { create: { type: state, occurredAt: candle.openTime, price, message: reason } },
+        },
+      });
+      if (position) {
+        await tx.strategyCandidate.updateMany({
+          where: { strategyConfigId: position.strategyConfigId, candleTime: position.openedAt, decision: "EXECUTE" },
+          data: { outcome: state === "CLOSED_TP" ? "TP" : state === "CLOSED_SL" ? "SL" : "TIMEOUT",
+            resolvedAt: candle.openTime },
+        });
+      }
     });
   }
 

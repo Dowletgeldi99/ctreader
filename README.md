@@ -216,20 +216,22 @@ Restart the backend, run `/connect_ctrader` to create an isolated mock demo acco
 
 Mock mode never connects to cTrader or a broker and never sends a real order. Disable it after Open API approval.
 
-## Strategy V4.2: Wave Rider
+## Strategy V4.3: Wave Rider
 
 The first non-news strategy is implemented for `XAUUSD` as a connector-independent state machine:
 
 - H1 candles are retained for analysis but do not participate in entry decisions;
-- M15 EMA 8/21 defines direction; M5 efficiency is recorded but does not block entries;
+- M15 EMA 8/21 must confirm `TREND_UP`/`TREND_DOWN`; M5 directional efficiency must be at least 0.30;
 - a completed M5 candle must break the preceding six completed M5 candles;
-- M5 direction, body of at least 35% and range of 0.3–3 ATR validate the impulse;
-- wick, close distance and relative tick volume are recorded for analysis but do not block execution;
+- M5 direction, body of at least 55%, range of 0.6–3 ATR, opposite wick of at most 35%,
+  close depth and relative tick volume of at least 0.90 validate the impulse;
 - configurable blackout around high-importance USD economic events;
 - an auditable `EXECUTE`/`SKIP` candidate record with model-ready feature snapshots;
 - one fixed `0.01 lot` demo PROBE entry;
-- one fixed `0.01 lot` demo MAIN is added only after a held retest or 0.5 M5 ATR favourable movement;
+- one fixed `0.01 lot` demo MAIN is added only after a directional, strong-bodied retest reclaim
+  or 0.5 M5 ATR favourable momentum;
 - structural stop behind the latest five M5 candles, constrained to 1.3–3 ATR, and a 2.5R target;
+- the position is closed as `NO_FOLLOW_THROUGH` when it has not reached +0.5R after six M5 bars;
 - three-M5-bar confirmation deadline and one-M5-bar cooldown, with no daily trade cap;
 - no averaging down, grid or martingale;
 - spread limit and one active position per strategy configuration;
